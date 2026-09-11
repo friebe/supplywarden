@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execPmSync } from "../util/pm-exec.js";
 
 export type NpmPackument = {
   "dist-tags"?: { latest?: string };
@@ -41,7 +41,7 @@ export function createOfflineRegistry(known: Record<string, string[]> = {}) {
 
 export function npmVersion(): string | null {
   try {
-    return execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+    return execPmSync("npm", ["--version"], { timeout: 15_000 });
   } catch {
     return null;
   }
@@ -49,7 +49,7 @@ export function npmVersion(): string | null {
 
 export function pnpmVersion(): string | null {
   try {
-    return execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim();
+    return execPmSync("pnpm", ["--version"], { timeout: 15_000 });
   } catch {
     return null;
   }

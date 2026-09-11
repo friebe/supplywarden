@@ -178,11 +178,10 @@ describe("runWhy / analyze", () => {
     expect(result.report.groups?.[0]?.package).toBe("qs");
   });
 
-  it("analyzes without alert file when audit provides findings", async () => {
+  it("analyzes without alert file via audit by default", async () => {
     const result = await runFix({
       cwd: fixtureDir("npm-simple"),
       apply: false,
-      enableAudit: true,
       audit: createStaticAudit([
         {
           package: "qs",
@@ -197,14 +196,14 @@ describe("runWhy / analyze", () => {
     expect(result.report.groups?.[0]?.package).toBe("qs");
   });
 
-  it("errors when no alert file and audit is disabled", async () => {
+  it("errors when no alert file and audit is skipped", async () => {
     const result = await runFix({
       cwd: fixtureDir("npm-simple"),
       apply: false,
       enableAudit: false,
     });
     expect(result.exitCode).toBe(1);
-    expect(result.messages.join("\n")).toMatch(/alert\.json/i);
+    expect(result.messages.join("\n")).toMatch(/skip-audit|alert file/i);
   });
 });
 

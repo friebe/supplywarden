@@ -4,6 +4,26 @@ Supply-chain governance for npm projects — triage, audited overrides, and comp
 
 Not a replacement for `npm audit fix`: **supplywarden** triages transitive Dependabot/audit findings, decides upgrade vs. override, and keeps overrides accountable in `security-metadata.json`.
 
+CLI name: **`supplywarden`** (`npx supplywarden …`). Config: `.supplywardenrc.json`.
+
+## Basic flow
+
+Three different jobs — do not mix them up:
+
+| | Command | Question |
+|--|---------|----------|
+| Environment | `doctor` | Can this repo run overrides? (PATH, lockfile, metadata). No vulnerability scan. |
+| New finding | `analyze` / `fix` | Upgrade the root or add an override? Input: Dependabot JSON **or** no file → `npm`/`pnpm`/`yarn audit`. `analyze` is dry-run; `fix --apply` writes. |
+| Existing overrides | `check` | Still needed, drifted, overdue, or safe to drop? Reads `security-metadata.json`. CI gate: `--strict`. |
+
+```
+once:      doctor → init
+new CVE:   why <pkg> → analyze → fix --apply --yes
+ongoing:   check --audit --strict
+cleanup:   check → verify [--apply]
+drift:     sync
+```
+
 Develop with **pnpm** (flags after the command; one `--` after `try` is enough):
 
 ```bash
@@ -12,39 +32,45 @@ pnpm install
 pnpm test
 pnpm try -- doctor --cwd fixtures/npm-simple
 pnpm try -- check --cwd fixtures/npm-mixed --html --open
+pnpm try -- analyze --cwd fixtures/npm-mixed
 pnpm try -- analyze --cwd fixtures/npm-mixed fixtures/alerts/mixed.json
+pnpm try -- why --cwd fixtures/npm-mixed qs
 ```
 
 ```bash
 npx supplywarden doctor
 npx supplywarden init
+npx supplywarden why qs
+npx supplywarden analyze
+npx supplywarden analyze fixtures/alerts/mixed.json
+npx supplywarden fix --apply --yes
+npx supplywarden fix --audit --apply --yes
+npx supplywarden fix fixtures/alerts/mixed.json --apply --yes
 npx supplywarden check --html --open
 npx supplywarden check --audit --strict
 npx supplywarden verify
 npx supplywarden verify --apply
-npx supplywarden analyze
-npx supplywarden analyze alert.json
-npx supplywarden fix --audit --apply --yes
-npx supplywarden fix alert.json --apply --yes
+npx supplywarden sync
+npx supplywarden report
 ```
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `doctor` | pnpm/npm, lockfile, metadata |
-| `init` | import existing `overrides` |
-| `analyze [alert.json]` | recommendation, no write. Without a file: `npm audit` when `audit.enabled` or `--audit` |
-| `fix [alert.json] --apply` | pre-gate → metadata + package.json |
-| `check [--strict] [--apply] [--audit]` | OVERDUE / REMOVABLE / DRIFT / new audit findings |
-| `verify [--apply]` | probe-remove REMOVABLE, install + audit, restore or apply |
+| `doctor` | Environment only: npm/pnpm on PATH, lockfile, metadata. No CVE scan |
+| `init` | import existing `overrides` into `security-metadata.json` |
+| `analyze [file]` | New findings, dry-run (upgrade vs override). No file → `npm`/`pnpm`/`yarn audit`. `--skip-audit` disables that |
+| `fix [file] --apply --yes` | Same as `analyze`, then validation gate → metadata + `package.json` |
+| `check [--strict] [--apply] [--audit]` | Existing overrides: OVERDUE, DRIFT, REMOVABLE, RESOLVED, PENDING_VERIFY, VERIFY_FAILED, UNTRACKED; optional `NEW` from audit |
+| `verify [--apply] [--skip-install]` | Prove a REMOVABLE override: drop → install → audit → restore or apply |
 | `sync` | metadata → `package.json` overrides (including `pnpm.overrides`) |
-| `why <pkg>` | who pulls in the package |
-| `report` | HTML dashboard |
+| `why <package>` | who pulls in the package (use before `analyze`/`fix`) |
+| `report` | write `supplywarden-report.html` in `--cwd` (same data as `check`, no new scan forced unless audit is on) |
 
-`--html [path]` and `--open` work on every command. `--cwd` points at a project directory.
+Global flags (every command): `--cwd <dir>`, `--html [path]`, `--open`. `--open` only opens a file if `--html` was also passed (`report` writes HTML even without `--html`). `--skip-audit` on `analyze` / `fix` / `check` skips the package-manager audit.
 
-Demo with every status and known CVEs: `fixtures/npm-mixed` (see `fixtures/README.md`). `npm-simple` has neither metadata nor overrides.
+Demo with every status and known CVEs: `fixtures/npm-mixed` + `fixtures/alerts/mixed.json` (see `fixtures/README.md`). `npm-simple` has neither metadata nor overrides.
 
 ## Best flow
 
@@ -59,15 +85,16 @@ npx supplywarden init          # only if package.json already has overrides
 
 `doctor` checks the lockfile and toolchain. `init` imports existing overrides into `security-metadata.json` (without advisories — those arrive later via alert/audit).
 
-**2. New vulnerability (Dependabot alert or audit)**
+**2. New vulnerability (Dependabot JSON or audit)**
 
 ```bash
 npx supplywarden why qs
-npx supplywarden analyze alert.json          # or: analyze --audit
-npx supplywarden fix alert.json --apply --yes
+npx supplywarden analyze                  # no file → npm/pnpm/yarn audit
+npx supplywarden analyze fixtures/alerts/mixed.json
+npx supplywarden fix --apply --yes        # same: audit if no file
 ```
 
-`why` shows the root and chain before you write. `analyze` is a dry-run (upgrade vs. override). `fix --apply` writes only after the validation gate.
+`why` shows the root and chain before you write. `analyze` without a file runs the package manager’s audit (`npm audit --json`, `pnpm audit --json`, or `yarn audit --json` / `yarn npm audit --json`). A Dependabot JSON file still works if you pass one. `fix --apply` writes only after the validation gate. `--yes` accepts impact warnings.
 
 **3. Ongoing (PR / CI / weekly)**
 
@@ -75,7 +102,7 @@ npx supplywarden fix alert.json --apply --yes
 npx supplywarden check --audit --strict --html --open
 ```
 
-Classifies overrides (OVERDUE, DRIFT, REMOVABLE, RESOLVED) and finds untracked audit findings (`NEW`). In CI: `--strict`, without `--open`. `report` is the same dashboard without forcing a new scan.
+Classifies overrides and finds untracked audit findings (`NEW`). In CI: `--strict`, without `--open`. `report` writes the same dashboard without forcing a new scan.
 
 **4. Clean up overrides — propose first, then prove**
 
@@ -98,15 +125,23 @@ Metadata is the source of truth; `sync` rewrites `package.json` / `pnpm.override
 | Situation | Command |
 |-----------|---------|
 | First setup | `doctor` → optional `init` |
-| Alert / new CVE | `why` → `analyze` → `fix --apply` |
+| Alert / new CVE | `why` → `analyze` (audit or JSON) → `fix --apply --yes` |
 | Regular gate | `check --audit --strict` |
 | “Can this override go?” | `check`, then `verify` / `verify --apply` |
 | package.json drifted | `sync` |
-| Share the dashboard | `check --html` or `report` |
+| Share the dashboard | `check --html --open` or `report` |
 
 ## Audit (without an alert file)
 
-Dependabot JSON remains the default. Optionally, `check` / `analyze` / `fix` discover vulnerabilities via the package manager:
+`analyze` and `fix` **without a file** always run the package manager in `--cwd`:
+
+- npm → `npm audit --json`
+- pnpm → `pnpm audit --json`
+- yarn → `yarn audit --json`, fallback `yarn npm audit --json`
+
+`--skip-audit` turns that off (then you must pass a Dependabot JSON file). `--audit` is optional; it is the default whenever no file is given.
+
+`check` is different: it only runs audit when `audit.enabled` is true in `.supplywardenrc.json` or you pass `--audit`.
 
 ```json
 {
@@ -117,7 +152,7 @@ Dependabot JSON remains the default. Optionally, `check` / `analyze` / `fix` dis
 }
 ```
 
-Then `npm audit --json` (or `pnpm audit` / `yarn npm audit`) runs in `--cwd`. Packages already covered by an override are not reported as `NEW`. Active overrides that audit no longer lists **and** whose lockfile has no vulnerable version left are marked `RESOLVED`. `--audit` forces the run, `--skip-audit` suppresses it. `--strict` fails on new findings.
+Packages already covered by an override are not reported as `NEW`. Active overrides that audit no longer lists **and** whose lockfile has no vulnerable version left are marked `RESOLVED`. `--strict` fails on overdue high/critical, drift, verify_failed, new findings, or untracked overrides.
 
 ## Verify (is the override really removable?)
 
@@ -129,7 +164,7 @@ Then `npm audit --json` (or `pnpm audit` / `yarn npm audit`) runs in `--cwd`. Pa
 4. Otherwise **CONFIRMED_REMOVABLE**
 5. Without `--apply`, always restore. With `--apply`, only confirmed drops.
 
-Not part of `check --strict` (install is slow and mutates the tree).
+`--skip-install` probes without `npm`/`pnpm install` (tests). Not part of `check --strict` (install is slow and mutates the tree).
 
 ## Validation gate
 
@@ -137,7 +172,7 @@ No apply on `STILL_VULNERABLE`, `NOOP_OVERRIDE`, `VERSION_NOT_FOUND`, `INTRODUCE
 
 ## Config
 
-See `.supplywardenrc.example.json`. Default file in the project: `.supplywardenrc.json`. An existing `.vulnfixrc.json` is still read (`doctor` warns).
+See `.supplywardenrc.example.json`. Default file in the project: `.supplywardenrc.json`. An existing `.vulnfixrc.json` is still read (`doctor` warns). Override the actor with `SUPPLYWARDEN_USER` (fallback `VULNFIX_USER`).
 
 ## Roadmap
 

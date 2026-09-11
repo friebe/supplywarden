@@ -44,6 +44,17 @@ function cwdOf(cmd: Command): string {
   return resolve(globalsOf(cmd).cwd ?? process.cwd());
 }
 
+function openReport(filePath: string): void {
+  const abs = resolve(filePath);
+  if (process.platform === "darwin") {
+    execFile("open", [abs], () => undefined);
+  } else if (process.platform === "win32") {
+    execFile("cmd.exe", ["/c", "start", "", abs], { windowsHide: true }, () => undefined);
+  } else {
+    execFile("xdg-open", [abs], () => undefined);
+  }
+}
+
 function emit(result: CommandResult, cmd: Command): never {
   const global = globalsOf(cmd);
   const md = toMarkdown(result.report);
@@ -56,8 +67,7 @@ function emit(result: CommandResult, cmd: Command): never {
     writeHtml(result.report, path);
     console.error(`HTML report: ${path}`);
     if (global.open && process.env.SUPPLYWARDEN_TEST !== "1" && process.env.VULNFIX_TEST !== "1") {
-      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-      execFile(opener, [path], () => undefined);
+      openReport(path);
     }
   }
   process.exit(result.exitCode);
@@ -90,10 +100,10 @@ withGlobals(
 withGlobals(
   program
     .command("analyze")
-    .argument("[alert.json]", "Dependabot alert JSON; omit to use npm/pnpm audit when enabled")
-    .option("--audit", "use package-manager audit when no alert file is given")
-    .option("--skip-audit", "do not fall back to package-manager audit")
-    .description("Analyze Dependabot alert(s) without writing"),
+    .argument("[alert.json]", "Dependabot alert JSON; omit to run npm/pnpm/yarn audit")
+    .option("--audit", "run package-manager audit (default when no alert file is given)")
+    .option("--skip-audit", "do not run package-manager audit")
+    .description("Analyze Dependabot alert(s) or live audit without writing"),
 ).action(async (alertPath: string | undefined, opts: { audit?: boolean; skipAudit?: boolean }, cmd: Command) => {
   emit(
     await runAnalyze({
@@ -108,12 +118,12 @@ withGlobals(
 withGlobals(
   program
     .command("fix")
-    .argument("[alert.json]", "Dependabot alert JSON; omit to use npm/pnpm audit when enabled")
+    .argument("[alert.json]", "Dependabot alert JSON; omit to run npm/pnpm/yarn audit")
     .option("--apply", "write metadata + package.json")
     .option("--yes", "accept impact warnings")
-    .option("--audit", "use package-manager audit when no alert file is given")
-    .option("--skip-audit", "do not fall back to package-manager audit")
-    .description("Plan (and optionally apply) a fix"),
+    .option("--audit", "run package-manager audit (default when no alert file is given)")
+    .option("--skip-audit", "do not run package-manager audit")
+    .description("Plan (and optionally apply) a fix from an alert file or live audit"),
 ).action(
   async (
     alertPath: string | undefined,

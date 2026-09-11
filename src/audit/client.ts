@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { groupAlerts, severityAtLeast } from "../alerts/dependabot.js";
 import { stillVulnerable } from "../decision/engine.js";
 import { detectPackageManager } from "../graph/npm.js";
@@ -13,9 +11,8 @@ import type {
   PackageManager,
   Severity,
 } from "../types.js";
+import { execPm } from "../util/pm-exec.js";
 import { parseNpmAuditJson } from "./parse.js";
-
-const execFileAsync = promisify(execFile);
 
 export function createStaticAudit(findings: AuditFinding[], error?: string): AuditClient {
   return {
@@ -25,42 +22,26 @@ export function createStaticAudit(findings: AuditFinding[], error?: string): Aud
   };
 }
 
-function auditCommand(pm: PackageManager | "unknown"): { cmd: string; args: string[] } {
-  if (pm === "pnpm") return { cmd: "pnpm", args: ["audit", "--json"] };
-  if (pm === "yarn") return { cmd: "yarn", args: ["npm", "audit", "--json"] };
-  return { cmd: "npm", args: ["audit", "--json"] };
-}
-
-async function runAuditProcess(cmd: string, args: string[], cwd: string): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync(cmd, args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 20 * 1024 * 1024,
-      timeout: 120_000,
-    });
-    return stdout;
-  } catch (err) {
-    const stdout = (err as { stdout?: string }).stdout;
-    if (typeof stdout === "string" && stdout.trim()) return stdout;
-    throw err;
-  }
+function auditArgSets(pm: PackageManager): string[][] {
+  if (pm === "yarn") return [["audit", "--json"], ["npm", "audit", "--json"]];
+  return [["audit", "--json"]];
 }
 
 export function createLiveAudit(): AuditClient {
   return {
     async audit(cwd: string): Promise<AuditResult> {
-      const pm = detectPackageManager(cwd);
-      const { cmd, args } = auditCommand(pm);
-      try {
-        const stdout = await runAuditProcess(cmd, args, cwd);
-        return { vulnerabilities: parseNpmAuditJson(stdout) };
-      } catch (err) {
-        return {
-          vulnerabilities: [],
-          error: (err as Error).message || `${cmd} audit failed`,
-        };
+      const detected = detectPackageManager(cwd);
+      const pm: PackageManager = detected === "unknown" ? "npm" : detected;
+      let lastError: string | undefined;
+      for (const args of auditArgSets(pm)) {
+        try {
+          const { stdout } = await execPm(pm, args, { cwd, timeout: 120_000 });
+          return { vulnerabilities: parseNpmAuditJson(stdout) };
+        } catch (err) {
+          lastError = (err as Error).message || `${pm} ${args.join(" ")} failed`;
+        }
       }
+      return { vulnerabilities: [], error: lastError ?? `${pm} audit failed` };
     },
   };
 }

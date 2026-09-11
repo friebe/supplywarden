@@ -34,7 +34,7 @@ export async function runFix(opts: {
 }): Promise<CommandResult> {
   const cwd = opts.cwd;
   const config = loadConfig(cwd);
-  const groupsResult = await loadGroups(opts, cwd, config.audit.enabled, config.audit.minSeverity);
+  const groupsResult = await loadGroups(opts, cwd, config.audit.minSeverity);
 
   if ("error" in groupsResult) {
     return {
@@ -112,7 +112,6 @@ async function loadGroups(
     audit?: AuditClient;
   },
   cwd: string,
-  configAuditEnabled: boolean,
   minSeverity: import("../types.js").Severity,
 ): Promise<{ groups: PackageAlertGroup[] } | { error: string }> {
   if (opts.alertPath) {
@@ -120,10 +119,11 @@ async function loadGroups(
     return { groups: groupAlerts(alertsFromInput(raw)) };
   }
 
-  const auditEnabled = opts.enableAudit ?? configAuditEnabled;
+  const auditEnabled = opts.enableAudit !== false;
   if (!auditEnabled) {
     return {
-      error: "No alert.json given. Pass a Dependabot file or enable audit in .supplywardenrc.json / --audit",
+      error:
+        "No alert file given and audit was skipped (--skip-audit). Pass a Dependabot JSON file, or omit --skip-audit to run npm/pnpm/yarn audit",
     };
   }
 
