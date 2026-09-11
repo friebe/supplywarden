@@ -1,0 +1,14 @@
+{
+  "advisories": {
+    "42": {
+      "github_advisory_id": "GHSA-qs-high",
+      "cves": ["CVE-2022-24999"],
+      "module_name": "qs",
+      "vulnerable_versions": "<6.11.0",
+      "patched_versions": ">=6.11.2",
+      "severity": "high",
+      "title": "qs prototype pollution",
+      "url": "https://github.com/advisories/GHSA-qs-high"
+    }
+  }
+}

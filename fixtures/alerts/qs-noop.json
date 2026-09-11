@@ -1,0 +1,13 @@
+{
+  "number": 3,
+  "state": "open",
+  "dependency": {
+    "package": { "ecosystem": "npm", "name": "qs" },
+    "manifest_path": "package.json"
+  },
+  "security_advisory": { "ghsa_id": "GHSA-qs-high", "severity": "high" },
+  "security_vulnerability": {
+    "vulnerable_version_range": "< 6.11.0",
+    "first_patched_version": { "identifier": "6.11.2" }
+  }
+}

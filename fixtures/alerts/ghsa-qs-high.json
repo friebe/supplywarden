@@ -1,0 +1,17 @@
+{
+  "number": 1,
+  "state": "open",
+  "dependency": {
+    "package": { "ecosystem": "npm", "name": "qs" },
+    "manifest_path": "package.json"
+  },
+  "security_advisory": {
+    "ghsa_id": "GHSA-qs-high",
+    "cve_id": "CVE-2022-24999",
+    "severity": "high"
+  },
+  "security_vulnerability": {
+    "vulnerable_version_range": "< 6.11.0",
+    "first_patched_version": { "identifier": "6.11.2" }
+  }
+}

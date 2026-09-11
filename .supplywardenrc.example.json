@@ -1,0 +1,15 @@
+{
+  "upgradeRootThreshold": 3,
+  "preferUpgradeOnPatchOnly": true,
+  "waitIfMaintainedDays": 7,
+  "defaultReviewDays": 7,
+  "maintenanceMinReleasesPerYear": 4,
+  "severityMinForAutoApply": "high",
+  "metadataPath": "security-metadata.json",
+  "impactWarnThreshold": 20,
+  "impactBlockThreshold": 100,
+  "audit": {
+    "enabled": false,
+    "minSeverity": "high"
+  }
+}

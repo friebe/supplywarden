@@ -1,0 +1,10 @@
+{
+  "name": "npm-scoped-override",
+  "private": true,
+  "dependencies": { "express": "^4.18.2" },
+  "overrides": {
+    "body-parser": {
+      "qs": "6.11.2"
+    }
+  }
+}

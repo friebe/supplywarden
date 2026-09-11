@@ -1,0 +1,41 @@
+[
+  {
+    "number": 11,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "hono" },
+      "manifest_path": "package.json"
+    },
+    "security_advisory": { "ghsa_id": "GHSA-aaa", "severity": "high" },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 4.6.5",
+      "first_patched_version": { "identifier": "4.6.5" }
+    }
+  },
+  {
+    "number": 12,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "hono" },
+      "manifest_path": "package.json"
+    },
+    "security_advisory": { "ghsa_id": "GHSA-bbb", "severity": "medium" },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 4.7.0",
+      "first_patched_version": { "identifier": "4.7.0" }
+    }
+  },
+  {
+    "number": 13,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "hono" },
+      "manifest_path": "package.json"
+    },
+    "security_advisory": { "ghsa_id": "GHSA-ccc", "severity": "high" },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 4.8.1",
+      "first_patched_version": { "identifier": "4.8.1" }
+    }
+  }
+]

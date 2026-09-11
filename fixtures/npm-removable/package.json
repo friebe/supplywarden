@@ -1,0 +1,10 @@
+{
+  "name": "npm-removable",
+  "private": true,
+  "dependencies": {
+    "express": "^4.21.0"
+  },
+  "overrides": {
+    "qs": "6.11.2"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "name": "supplywarden",
+  "version": "0.1.0",
+  "description": "Supply-chain governance for npm projects — triage, audited overrides, and compliance checks",
+  "type": "module",
+  "bin": {
+    "supplywarden": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "schema",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --dts --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "try": "tsx src/cli.ts",
+    "prepublishOnly": "pnpm run build && pnpm test"
+  },
+  "author": {
+    "name": "Jan Friebe",
+    "email": "kontakt@jan-friebe.de"
+  },
+  "bugs": {
+    "email": "kontakt@jan-friebe.de"
+  },
+  "keywords": [
+    "supply-chain",
+    "governance",
+    "compliance",
+    "dependabot",
+    "overrides",
+    "security"
+  ],
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.9",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "semver": "^7.6.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/semver": "^7.5.8",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

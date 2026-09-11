@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/supplywarden@latest/schema/security-metadata.schema.json",
+  "title": "supplywarden security-metadata",
+  "type": "object",
+  "required": ["version", "entries"],
+  "properties": {
+    "version": { "const": 1 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "package",
+          "forcedVersion",
+          "reason",
+          "strategy",
+          "advisories"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "status": {
+            "enum": [
+              "active",
+              "pending_verify",
+              "verify_failed",
+              "resolved",
+              "superseded"
+            ]
+          },
+          "package": { "type": "string" },
+          "forcedVersion": { "type": "string" },
+          "reason": { "type": "string" },
+          "strategy": { "enum": ["override", "upgrade", "wait"] },
+          "advisories": { "type": "array" }
+        }
+      }
+    }
+  }
+}

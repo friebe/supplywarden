@@ -1,0 +1,74 @@
+[
+  {
+    "number": 1,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "qs" },
+      "manifest_path": "package.json"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-hrpp-h998-j3pp",
+      "cve_id": "CVE-2022-24999",
+      "severity": "high",
+      "summary": "qs prototype pollution"
+    },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 6.11.0",
+      "first_patched_version": { "identifier": "6.11.2" }
+    }
+  },
+  {
+    "number": 2,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "semver" },
+      "manifest_path": "package.json"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-c2qf-rxjj-qqgw",
+      "cve_id": "CVE-2022-25883",
+      "severity": "high",
+      "summary": "semver ReDoS"
+    },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 7.5.2",
+      "first_patched_version": { "identifier": "7.5.2" }
+    }
+  },
+  {
+    "number": 3,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "minimist" },
+      "manifest_path": "package.json"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-xvch-5gv4-984h",
+      "cve_id": "CVE-2021-44906",
+      "severity": "high",
+      "summary": "minimist prototype pollution"
+    },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 1.2.6",
+      "first_patched_version": { "identifier": "1.2.6" }
+    }
+  },
+  {
+    "number": 4,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "ws" },
+      "manifest_path": "package.json"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-3h5v-q93c-6h6q",
+      "cve_id": "CVE-2024-37890",
+      "severity": "high",
+      "summary": "ws DoS via many HTTP headers"
+    },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 8.17.1",
+      "first_patched_version": { "identifier": "8.17.1" }
+    }
+  }
+]

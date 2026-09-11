@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+import { classifyEntry, reconcileWithAudit, removableReasonLabel } from "../../src/check/classify.js";
+import { toMarkdown } from "../../src/report/model.js";
+import { fixtureDir } from "../helpers/fixture-project.js";
+import type { CheckEntry, MetadataEntry } from "../../src/types.js";
+
+describe("classifyEntry", () => {
+  it("marks npm-removable as RESOLVED with no-vulnerable-version", () => {
+    const result = classifyEntry(fixtureDir("npm-removable"), {
+      id: "qs-removable",
+      status: "active",
+      package: "qs",
+      forcedVersion: "6.11.2",
+      scope: { type: "global" },
+      advisories: [
+        { ghsaId: "GHSA-qs-high", severity: "high", vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" },
+      ],
+      reason: "historical override",
+      strategy: "override",
+      rootPackages: ["express"],
+      dependencyChains: [],
+      packageManager: "npm",
+      manifestPath: "package.json",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      createdBy: "peter",
+      reviewBy: "2026-12-01T00:00:00.000Z",
+      reviewReason: "check",
+    });
+    expect(result.statuses).toContain("RESOLVED");
+    expect(result.removableReason).toBe("no-vulnerable-version");
+    expect(result.roots?.length).toBeGreaterThan(0);
+  });
+});
+
+describe("reconcileWithAudit", () => {
+  const base = {
+    entry: {
+      id: "1",
+      status: "active",
+      package: "qs",
+      forcedVersion: "6.11.2",
+      advisories: [{ severity: "high" as const, vulnerableRange: "< 6.11.0" }],
+    } as MetadataEntry,
+    status: "OK" as const,
+    statuses: ["OK" as const],
+    suggestedAction: "keep",
+    issues: [],
+    installedVersions: ["6.10.0"],
+  } satisfies CheckEntry;
+
+  it("does not resolve when lockfile is still vulnerable even if audit is silent", () => {
+    const next = reconcileWithAudit([base], []);
+    expect(next[0]!.status).toBe("OK");
+  });
+
+  it("marks RESOLVED when audit is silent and lockfile is already REMOVABLE", () => {
+    const next = reconcileWithAudit(
+      [{ ...base, status: "REMOVABLE", statuses: ["REMOVABLE"], installedVersions: ["6.11.2"] }],
+      [],
+    );
+    expect(next[0]!.statuses).toContain("RESOLVED");
+    expect(next[0]!.removableReason).toBe("audit-clear");
+  });
+
+  it("keeps existing reason when already RESOLVED", () => {
+    const next = reconcileWithAudit(
+      [
+        {
+          ...base,
+          status: "RESOLVED",
+          statuses: ["RESOLVED", "REMOVABLE"],
+          removableReason: "no-vulnerable-version",
+          installedVersions: ["6.11.2"],
+        },
+      ],
+      [],
+    );
+    expect(next[0]!.removableReason).toBe("no-vulnerable-version");
+  });
+});
+
+describe("toMarkdown removable section", () => {
+  it("lists Safe to remove and chains", () => {
+    const md = toMarkdown({
+      title: "t",
+      generatedAt: "now",
+      cwd: "/x",
+      summary: { removable: 1 },
+      entries: [
+        {
+          entry: {
+            id: "1",
+            status: "active",
+            package: "qs",
+            forcedVersion: "6.11.2",
+            scope: { type: "global" },
+            advisories: [{ ghsaId: "GHSA-qs-high", severity: "high", vulnerableRange: "< 6.11.0" }],
+            reason: "r",
+            strategy: "override",
+            rootPackages: ["express"],
+            dependencyChains: ["express@4 → qs@6.11.2"],
+            packageManager: "npm",
+            manifestPath: "package.json",
+            createdAt: "",
+            createdBy: "",
+            reviewBy: "",
+            reviewReason: "",
+          },
+          status: "RESOLVED",
+          statuses: ["RESOLVED", "REMOVABLE"],
+          suggestedAction: "drop",
+          issues: [],
+          removableReason: "no-vulnerable-version",
+          roots: ["express"],
+          chains: ["express@4 → qs@6.11.2"],
+          installedVersions: ["6.11.2"],
+        },
+      ],
+    });
+    expect(md).toContain("## Safe to remove");
+    expect(md).toContain(removableReasonLabel("no-vulnerable-version"));
+    expect(md).toContain("## Dependency chains");
+    expect(md).toContain("express@4 → qs@6.11.2");
+  });
+});

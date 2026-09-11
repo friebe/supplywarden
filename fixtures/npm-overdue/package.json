@@ -1,0 +1,6 @@
+{
+  "name": "npm-overdue",
+  "private": true,
+  "dependencies": { "express": "^4.18.2" },
+  "overrides": { "qs": "6.11.2" }
+}

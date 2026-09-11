@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "qs-overdue-active",
+      "status": "active",
+      "package": "qs",
+      "forcedVersion": "6.11.2",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-hrpp-h998-j3pp",
+          "cveId": "CVE-2022-24999",
+          "severity": "high",
+          "vulnerableRange": "< 6.11.0",
+          "patchedVersion": "6.11.2"
+        }
+      ],
+      "reason": "express → qs@6.5.0 still in lockfile (CVE-2022-24999); override not yet reflected",
+      "strategy": "override",
+      "rootPackages": ["express"],
+      "dependencyChains": ["express@4.18.2 → qs@6.5.0"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2025-02-01T00:00:00.000Z",
+      "reviewReason": "Lockfile still on vulnerable qs"
+    },
+    {
+      "id": "lodash-removable",
+      "status": "active",
+      "package": "lodash",
+      "forcedVersion": "4.17.21",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-35jh-r3h4-6jhm",
+          "cveId": "CVE-2021-23337",
+          "severity": "high",
+          "vulnerableRange": "< 4.17.21",
+          "patchedVersion": "4.17.21"
+        }
+      ],
+      "reason": "Lockfile already on patched lodash@4.17.21",
+      "strategy": "override",
+      "rootPackages": ["lodash"],
+      "dependencyChains": ["lodash@4.17.21"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "Override likely removable"
+    },
+    {
+      "id": "minimist-drift",
+      "status": "active",
+      "package": "minimist",
+      "forcedVersion": "1.2.8",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-xvch-5gv4-984h",
+          "cveId": "CVE-2021-44906",
+          "severity": "high",
+          "vulnerableRange": "< 1.2.6",
+          "patchedVersion": "1.2.6"
+        }
+      ],
+      "reason": "Metadata override missing from package.json (drift); lockfile still minimist@1.2.5",
+      "strategy": "override",
+      "rootPackages": ["minimist"],
+      "dependencyChains": ["minimist@1.2.5"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "sync needed"
+    },
+    {
+      "id": "semver-pending",
+      "status": "pending_verify",
+      "package": "semver",
+      "forcedVersion": "7.5.2",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-c2qf-rxjj-qqgw",
+          "cveId": "CVE-2022-25883",
+          "severity": "high",
+          "vulnerableRange": "< 7.5.2",
+          "patchedVersion": "7.5.2"
+        }
+      ],
+      "reason": "Apply written, lockfile still semver@7.5.1 (ReDoS) until install",
+      "strategy": "override",
+      "rootPackages": ["semver"],
+      "dependencyChains": ["semver@7.5.1"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "pending install/verify"
+    },
+    {
+      "id": "tar-verify-failed",
+      "status": "verify_failed",
+      "package": "tar",
+      "forcedVersion": "6.2.1",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-f5x3-32g6-xq36",
+          "cveId": "CVE-2024-28863",
+          "severity": "high",
+          "vulnerableRange": "< 6.2.1",
+          "patchedVersion": "6.2.1"
+        }
+      ],
+      "reason": "Last apply verify failed; lockfile already on tar@6.2.1",
+      "strategy": "override",
+      "rootPackages": ["tar"],
+      "dependencyChains": ["tar@6.2.1"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "re-run verify"
+    }
+  ]
+}

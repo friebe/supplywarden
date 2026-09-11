@@ -1,0 +1,208 @@
+import { findDuplicate, dedupeOrSupersede } from "../validation/collisions.js";
+import { assessImpact, estimateImpact } from "../validation/impact-diff.js";
+import { blockingIssues, runPreApplyGate } from "../validation/override-gate.js";
+import { runPostVerify } from "../validation/post-verify.js";
+import { readMetadata, writeMetadata, newEntryId } from "../metadata/store.js";
+import { syncOverridesToPackageJson, readPackageJson, writePackageJson } from "../metadata/sync.js";
+import { addDaysIso, nowIso } from "../util/time.js";
+import { restoreFiles, snapshotFiles } from "../util/snapshot.js";
+import { actorName } from "../config.js";
+import type {
+  AuditClient,
+  CommandResult,
+  Decision,
+  GraphAnalysis,
+  InstallClient,
+  MetadataEntry,
+  PackageAlertGroup,
+  RegistryClient,
+  ReportModel,
+  SupplywardenConfig,
+} from "../types.js";
+
+export type ApplyOptions = {
+  cwd: string;
+  config: SupplywardenConfig;
+  group: PackageAlertGroup;
+  graph: GraphAnalysis;
+  decision: Decision;
+  apply: boolean;
+  yes?: boolean;
+  skipInstall?: boolean;
+  registry?: RegistryClient;
+  audit?: AuditClient;
+  install?: InstallClient;
+};
+
+export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
+  const messages: string[] = [];
+  const { cwd, config, group, graph, decision } = opts;
+  const forcedVersion = decision.forcedVersion ?? group.forcedVersion;
+
+  if (!forcedVersion) {
+    const report = baseReport(opts, [], "No patched version in advisory");
+    return { exitCode: 1, report, messages: ["No patched version available"] };
+  }
+
+  const metadata = readMetadata(cwd, config);
+  const issues = await runPreApplyGate({
+    pkg: group.package,
+    forcedVersion,
+    graph,
+    advisories: group.advisories,
+    scope: decision.scope,
+    existing: metadata.entries,
+    registry: opts.registry,
+  });
+
+  const impact = assessImpact(estimateImpact(graph.chains.length, graph.roots.length), config);
+  if (impact.blocked) {
+    issues.push({
+      code: "IMPACT_BLOCKED",
+      message: `Lockfile-Impact ${impact.changedPackages} exceeds block threshold ${config.impactBlockThreshold}`,
+      blocking: true,
+    });
+  }
+
+  const blocked = blockingIssues(issues);
+  const report = baseReport(opts, issues, "Pre-apply validation", { impact });
+
+  if (!opts.apply) {
+    messages.push("Dry-run: pass --apply to write package.json and security-metadata.json");
+    return { exitCode: blocked.length ? 1 : 0, report, messages };
+  }
+
+  if (blocked.length) {
+    return {
+      exitCode: 1,
+      report: { ...report, title: `ABGELEHNT: ${blocked[0]!.code}` },
+      messages: blocked.map((i) => i.message),
+    };
+  }
+
+  if (impact.warning && !opts.yes) {
+    return {
+      exitCode: 1,
+      report,
+      messages: [
+        `Impact warning: ${impact.changedPackages} packages (threshold ${config.impactWarnThreshold}). Re-run with --yes to apply.`,
+      ],
+    };
+  }
+
+  const files = [config.metadataPath, "package.json"];
+  const snap = snapshotFiles(cwd, files);
+
+  const duplicate = findDuplicate(metadata, group.package, group.advisories[0]?.ghsaId);
+  const entry: MetadataEntry = {
+    id: duplicate?.id ?? newEntryId(),
+    status: "pending_verify",
+    package: group.package,
+    forcedVersion,
+    scope: decision.scope,
+    advisories: group.advisories,
+    reason: decision.reason,
+    strategy: decision.strategy,
+    rootPackages: graph.roots.map((r) => r.name),
+    dependencyChains: graph.chains.map((c) => c.path.join(" → ")),
+    packageManager: "npm",
+    manifestPath: group.manifestPath,
+    createdAt: duplicate?.createdAt ?? nowIso(),
+    createdBy: actorName(),
+    reviewBy: addDaysIso(config.defaultReviewDays),
+    reviewReason: "Verify whether a root-package upgrade can replace this override",
+    needsReview: false,
+  };
+
+  if (decision.strategy === "upgrade" && decision.upgradeTargets?.length) {
+    bumpRootPackages(cwd, decision.upgradeTargets.map((t) => t.name), group.manifestPath);
+    messages.push(`Root packages bumped: ${decision.upgradeTargets.map((t) => t.name).join(", ")}`);
+  }
+
+  const { metadata: next } = dedupeOrSupersede(metadata, entry);
+  writeMetadata(cwd, config, next);
+  if (decision.strategy === "override") {
+    syncOverridesToPackageJson(cwd, next, group.manifestPath);
+  }
+
+  if (!opts.skipInstall && opts.install) {
+    const installed = await opts.install.install(cwd);
+    if (!installed.ok) {
+      restoreFiles(cwd, snap);
+      messages.push(installed.error ?? "npm install failed");
+      entry.status = "verify_failed";
+      return {
+        exitCode: 1,
+        report: { ...report, title: "VERIFY_FAILED peer conflict" },
+        messages,
+      };
+    }
+  }
+
+  const post = await runPostVerify({
+    cwd,
+    pkg: group.package,
+    forcedVersion,
+    advisories: group.advisories,
+    audit: opts.audit,
+  });
+  const postBlocked = blockingIssues(post);
+
+  if (postBlocked.length && !opts.skipInstall) {
+    restoreFiles(cwd, snap);
+    messages.push(...postBlocked.map((i) => i.message));
+    return {
+      exitCode: 1,
+      report: { ...report, title: "VERIFY_FAILED", validation: [...issues, ...post] },
+      messages,
+    };
+  }
+
+  const verified = readMetadata(cwd, config);
+  const saved = verified.entries.find((e) => e.id === entry.id);
+  if (saved) saved.status = "active";
+  writeMetadata(cwd, config, verified);
+
+  messages.push(`Entry ${entry.id} active (${decision.strategy} ${group.package}@${forcedVersion})`);
+  return {
+    exitCode: 0,
+    report: { ...report, title: `Applied ${group.package}@${forcedVersion}` },
+    messages,
+    writtenFiles: [config.metadataPath, "package.json"],
+  };
+}
+
+function bumpRootPackages(cwd: string, names: string[], manifestPath: string): void {
+  const pkg = readPackageJson(cwd, manifestPath);
+  const deps = (pkg.dependencies ?? {}) as Record<string, string>;
+  for (const name of names) {
+    if (deps[name] && !deps[name].startsWith("^") && !deps[name].startsWith("~")) {
+      deps[name] = `^${deps[name]}`;
+    }
+  }
+  pkg.dependencies = deps;
+  writePackageJson(cwd, pkg, manifestPath);
+}
+
+function baseReport(
+  opts: ApplyOptions,
+  issues: ApplyOptions extends never ? never : import("../types.js").ValidationIssue[],
+  title: string,
+  extra: Partial<ReportModel> = {},
+): ReportModel {
+  return {
+    title,
+    generatedAt: nowIso(),
+    cwd: opts.cwd,
+    summary: {
+      package: opts.group.package,
+      strategy: opts.decision.strategy,
+      advisories: opts.group.advisories.length,
+    },
+    entries: [],
+    groups: [opts.group],
+    decision: opts.decision,
+    validation: issues,
+    ...extra,
+  };
+}

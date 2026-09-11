@@ -1,0 +1,33 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "qs": {
+      "name": "qs",
+      "severity": "high",
+      "via": [
+        {
+          "source": 1,
+          "name": "qs",
+          "dependency": "qs",
+          "title": "qs prototype pollution",
+          "url": "https://github.com/advisories/GHSA-qs-high",
+          "severity": "high",
+          "range": "<6.11.0"
+        }
+      ],
+      "effects": ["express"],
+      "range": "<6.11.0",
+      "nodes": ["node_modules/qs"],
+      "fixAvailable": true
+    },
+    "express": {
+      "name": "express",
+      "severity": "high",
+      "via": ["qs"],
+      "effects": [],
+      "range": "*",
+      "nodes": ["node_modules/express"],
+      "fixAvailable": true
+    }
+  }
+}

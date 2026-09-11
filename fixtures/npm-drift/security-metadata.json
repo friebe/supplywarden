@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "qs-drift",
+      "status": "active",
+      "package": "qs",
+      "forcedVersion": "6.11.2",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-qs-high",
+          "severity": "high",
+          "vulnerableRange": "< 6.11.0",
+          "patchedVersion": "6.11.2"
+        }
+      ],
+      "reason": "missing in package.json",
+      "strategy": "override",
+      "rootPackages": ["express"],
+      "dependencyChains": ["express → qs"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "peter",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "sync"
+    }
+  ]
+}
