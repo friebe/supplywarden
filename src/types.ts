@@ -93,11 +93,7 @@ export type AuditConfig = {
 
 export type SupplywardenConfig = {
   upgradeRootThreshold: number;
-  preferUpgradeOnPatchOnly: boolean;
-  waitIfMaintainedDays: number;
   defaultReviewDays: number;
-  maintenanceMinReleasesPerYear: number;
-  severityMinForAutoApply: Severity;
   metadataPath: string;
   impactWarnThreshold: number;
   impactBlockThreshold: number;

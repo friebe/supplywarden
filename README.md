@@ -48,4 +48,21 @@ With `--strict` it is a gate (exit 1) if any of these is true:
 
 REMOVABLE/RESOLVED alone do not fail the gate (`verify --apply` is cleanup, not a blocker).
 
-Config: `.supplywardenrc.json` (see `.supplywardenrc.example.json`). Kitchen-sink demo: `fixtures/npm-mixed`.
+## Config
+
+File: `.supplywardenrc.json` in the project (example: `.supplywardenrc.example.json`). Only these keys do something today:
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `audit.minSeverity` | `"high"` | After `npm`/`pnpm`/`yarn audit`, drop findings below this label. `critical` > `high` > `medium` > `low`. |
+| `upgradeRootThreshold` | `3` | `check` / `fix`: if this many (or fewer) roots pull the vuln package, prefer **upgrade**; more roots → **override**. |
+| `defaultReviewDays` | `7` | New overrides get `reviewBy` = now + N days. After that, `--strict` fails on high/critical **OVERDUE**. |
+| `metadataPath` | `"security-metadata.json"` | Where override records live. |
+| `impactWarnThreshold` | `20` | `fix --apply` logs a warning if the estimated lockfile change is this large (does not block). |
+| `impactBlockThreshold` | `100` | `fix --apply` refuses if the estimated change is this large. |
+
+**`minSeverity: "high"`** is the usual CI setting: the audit still runs in full, but medium/low never become `NEW` and do not fail `--strict`. That cuts noise (prototype-pollution-in-a-dev-tool, etc.) so the gate stays about exploitable prod issues.
+
+Set `"medium"` if you want those in the report too. `"critical"` is stricter (only critical `NEW`). Dependabot JSON files are **not** filtered — only live audit findings.
+
+Kitchen-sink demo: `fixtures/npm-mixed`.
