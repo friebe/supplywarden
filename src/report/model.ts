@@ -1,5 +1,5 @@
 import type { CheckEntry, ReportModel } from "../types.js";
-import { removableReasonLabel } from "../check/classify.js";
+import { removableReasonLabel, sortCheckEntries } from "../check/classify.js";
 import { nowIso } from "../util/time.js";
 
 export function emptyReport(cwd: string, title: string): ReportModel {
@@ -60,7 +60,8 @@ export function toMarkdown(report: ReportModel): string {
     );
   }
 
-  const removable = report.entries.filter(canRemove);
+  const entries = sortCheckEntries(report.entries);
+  const removable = entries.filter(canRemove);
   if (removable.length) {
     lines.push("## Safe to remove", "");
     lines.push(
@@ -75,9 +76,9 @@ export function toMarkdown(report: ReportModel): string {
     lines.push("");
   }
 
-  if (report.entries.length) {
+  if (entries.length) {
     lines.push("| Package | Status | Recommendation |", "|---------|--------|----------------|");
-    for (const e of report.entries) {
+    for (const e of entries) {
       const verify = e.verifyOutcome ? ` (${e.verifyOutcome})` : "";
       lines.push(
         `| ${e.entry.package}@${e.entry.forcedVersion} | ${e.statuses.join(" + ")}${verify} | ${e.suggestedAction} |`,
@@ -86,7 +87,7 @@ export function toMarkdown(report: ReportModel): string {
     lines.push("");
   }
 
-  const withChains = report.entries.filter(
+  const withChains = entries.filter(
     (e) => (e.roots?.length ?? 0) > 0 || (e.chains?.length ?? 0) > 0 || (e.installedVersions?.length ?? 0) > 0,
   );
   if (withChains.length) {

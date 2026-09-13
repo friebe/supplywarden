@@ -26,7 +26,6 @@ export async function runFix(opts: {
   cwd: string;
   alertPath?: string;
   apply?: boolean;
-  yes?: boolean;
   skipInstall?: boolean;
   registry?: RegistryClient;
   enableAudit?: boolean;
@@ -82,7 +81,6 @@ export async function runFix(opts: {
       graph,
       decision,
       apply: Boolean(opts.apply),
-      yes: opts.yes,
       skipInstall: opts.skipInstall ?? true,
       registry,
     });

@@ -9,7 +9,6 @@
   "impactWarnThreshold": 20,
   "impactBlockThreshold": 100,
   "audit": {
-    "enabled": false,
     "minSeverity": "high"
   }
 }

@@ -40,23 +40,29 @@ describe("runInit", () => {
 
 describe("runCheck", () => {
   it("lists package.json overrides as UNTRACKED when metadata is missing", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-five-overrides") });
+    const result = await runCheck({ cwd: fixtureDir("npm-five-overrides"), enableAudit: false });
     expect(result.report.entries).toHaveLength(5);
     expect(result.report.entries.every((e) => e.status === "UNTRACKED")).toBe(true);
     expect(result.messages.join("\n")).toMatch(/untracked/);
+    const qs = result.report.entries.find((e) => e.entry.package === "qs");
+    expect(qs?.suggestedAction).toMatch(/express/);
   });
 
   it("kitchen-sink fixture reports overdue, removable, drift, pending, verify_failed, untracked", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-mixed") });
+    const result = await runCheck({ cwd: fixtureDir("npm-mixed"), enableAudit: false });
     const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.entry.package, e]));
     expect(byPkg.qs?.status).toBe("OVERDUE");
     expect(byPkg.lodash?.statuses).toContain("REMOVABLE");
+    expect(byPkg.lodash?.removableReason).toBe("no-vulnerable-version");
+    expect(byPkg.request?.statuses).toContain("REMOVABLE");
+    expect(byPkg.request?.removableReason).toBe("not-in-tree");
     expect(byPkg.minimist?.status).toBe("DRIFT");
     expect(byPkg.semver?.status).toBe("PENDING_VERIFY");
     expect(byPkg.tar?.status).toBe("VERIFY_FAILED");
     expect(byPkg.ws?.status).toBe("UNTRACKED");
     expect(byPkg.qs?.suggestedAction).toMatch(/supplywarden why qs/);
-    expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden (?:verify --apply|check --apply)/);
+    expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden verify --apply/);
+    expect(byPkg.request?.suggestedAction).toMatch(/supplywarden verify --apply/);
     expect(byPkg.minimist?.suggestedAction).toMatch(/supplywarden sync/);
     expect(byPkg.semver?.suggestedAction).toMatch(/supplywarden verify/);
     expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden why tar/);
@@ -65,13 +71,13 @@ describe("runCheck", () => {
   });
 
   it("explains empty fixtures without overrides or metadata", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-simple") });
+    const result = await runCheck({ cwd: fixtureDir("npm-simple"), enableAudit: false });
     expect(result.report.entries).toHaveLength(0);
     expect(result.messages.join("\n")).toMatch(/Nothing to show/);
   });
 
   it("marks override as REMOVABLE/RESOLVED when vuln is gone", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-removable") });
+    const result = await runCheck({ cwd: fixtureDir("npm-removable"), enableAudit: false });
     expect(result.exitCode).toBe(0);
     expect(result.report.entries[0]!.statuses).toContain("REMOVABLE");
     expect(result.report.entries[0]!.removableReason).toBe("no-vulnerable-version");
@@ -79,25 +85,14 @@ describe("runCheck", () => {
   });
 
   it("exits 1 on --strict + overdue high", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-overdue"), strict: true });
+    const result = await runCheck({ cwd: fixtureDir("npm-overdue"), strict: true, enableAudit: false });
     expect(result.exitCode).toBe(1);
     expect(result.report.entries[0]!.statuses).toContain("OVERDUE");
   });
 
   it("detects DRIFT when package.json is missing the override", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-drift") });
+    const result = await runCheck({ cwd: fixtureDir("npm-drift"), enableAudit: false });
     expect(result.report.entries[0]!.status).toBe("DRIFT");
-  });
-
-  it("apply resolves removable entries", async () => {
-    await withFixture("npm-removable", async (dir) => {
-      const result = await runCheck({ cwd: dir, apply: true, yes: true });
-      expect(result.exitCode).toBe(0);
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries[0].status).toBe("resolved");
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides).toBeUndefined();
-    });
   });
 
   it("reports NEW audit findings that are not already overridden", async () => {
@@ -118,6 +113,10 @@ describe("runCheck", () => {
       true,
     );
     expect(result.report.summary.auditNew).toBe(1);
+    const qs = result.report.entries.find((e) => e.status === "NEW" && e.entry.package === "qs");
+    expect(qs?.suggestedAction).toMatch(/UPGRADE|OVERRIDE/);
+    expect(qs?.suggestedAction).toMatch(/express|qs@/);
+    expect(qs?.decision?.strategy).toMatch(/upgrade|override/);
   });
 
   it("does not flag audit findings covered by an active override", async () => {
@@ -214,7 +213,6 @@ describe("validation gates", () => {
         cwd: dir,
         alertPath: join(FIXTURES_ROOT, "alerts/uuid-still-vulnerable.json"),
         apply: true,
-        yes: true,
         skipInstall: true,
         registry: {
           async verifyPackageVersion() {
@@ -232,7 +230,6 @@ describe("validation gates", () => {
       cwd: fixtureDir("npm-noop-override"),
       alertPath: join(FIXTURES_ROOT, "alerts/qs-noop.json"),
       apply: true,
-      yes: true,
       skipInstall: true,
       registry: {
         async verifyPackageVersion() {
@@ -250,7 +247,6 @@ describe("validation gates", () => {
         cwd: dir,
         alertPath: join(FIXTURES_ROOT, "alerts/ghsa-qs-high.json"),
         apply: true,
-        yes: true,
         skipInstall: true,
         registry: {
           async verifyPackageVersion() {
@@ -273,7 +269,6 @@ describe("validation gates", () => {
         cwd: dir,
         alertPath: join(FIXTURES_ROOT, "alerts/ghsa-qs-high.json"),
         apply: true,
-        yes: true,
         skipInstall: true,
         registry: {
           async verifyPackageVersion() {
@@ -299,12 +294,12 @@ describe("doctor / html / sync", () => {
   });
 
   it("renders HTML with removable section and chains", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-removable") });
+    const result = await runCheck({ cwd: fixtureDir("npm-removable"), enableAudit: false });
     const html = renderHtml(result.report);
     expect(html).toContain("supplywarden-data");
     expect(html).toContain("qs");
     expect(html).toMatch(/Safe to remove|no-vulnerable-version/);
-    expect(html).toMatch(/supplywarden check --apply|supplywarden verify --apply/);
+    expect(html).toMatch(/supplywarden verify --apply/);
     expect(JSON.stringify(result.report.entries[0])).toMatch(/roots|express/);
   });
 

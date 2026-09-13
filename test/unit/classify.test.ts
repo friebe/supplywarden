@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyEntry, reconcileWithAudit, removableReasonLabel } from "../../src/check/classify.js";
+import { classifyEntry, classifyUntrackedOverride, reconcileWithAudit, removableReasonLabel, sortCheckEntries } from "../../src/check/classify.js";
 import { toMarkdown } from "../../src/report/model.js";
 import { fixtureDir } from "../helpers/fixture-project.js";
 import type { CheckEntry, MetadataEntry } from "../../src/types.js";
@@ -121,5 +121,94 @@ describe("toMarkdown removable section", () => {
     expect(md).toContain(removableReasonLabel("no-vulnerable-version"));
     expect(md).toContain("## Dependency chains");
     expect(md).toContain("express@4 → qs@6.11.2");
+  });
+
+  it("lists NEW and OVERDUE before OK", () => {
+    const stub = (pkg: string, status: CheckEntry["status"], statuses: CheckEntry["statuses"]): CheckEntry => ({
+      entry: {
+        id: pkg,
+        status: "active",
+        package: pkg,
+        forcedVersion: "1.0.0",
+        scope: { type: "global" },
+        advisories: [],
+        reason: "",
+        strategy: "override",
+        rootPackages: [],
+        dependencyChains: [],
+        packageManager: "npm",
+        manifestPath: "package.json",
+        createdAt: "",
+        createdBy: "",
+        reviewBy: "",
+        reviewReason: "",
+      },
+      status,
+      statuses,
+      suggestedAction: status,
+      issues: [],
+    });
+    const md = toMarkdown({
+      title: "t",
+      generatedAt: "now",
+      cwd: "/x",
+      summary: {},
+      entries: [stub("ok-pkg", "OK", ["OK"]), stub("new-pkg", "NEW", ["NEW"]), stub("overdue-pkg", "OVERDUE", ["OVERDUE"])],
+    });
+    const newAt = md.indexOf("new-pkg");
+    const overdueAt = md.indexOf("overdue-pkg");
+    const okAt = md.indexOf("ok-pkg");
+    expect(newAt).toBeGreaterThan(-1);
+    expect(newAt).toBeLessThan(overdueAt);
+    expect(overdueAt).toBeLessThan(okAt);
+  });
+});
+
+function stubEntry(pkg: string, forcedVersion: string): MetadataEntry {
+  return {
+    id: `untracked:${pkg}`,
+    status: "active",
+    package: pkg,
+    forcedVersion,
+    scope: { type: "global" },
+    advisories: [],
+    reason: "imported",
+    strategy: "override",
+    rootPackages: [],
+    dependencyChains: [],
+    packageManager: "npm",
+    manifestPath: "package.json",
+    createdAt: "2025-01-01T00:00:00.000Z",
+    createdBy: "init",
+    reviewBy: "2026-12-01T00:00:00.000Z",
+    reviewReason: "init",
+  };
+}
+
+describe("classifyUntrackedOverride", () => {
+  it("marks an override not in the tree as REMOVABLE", () => {
+    const result = classifyUntrackedOverride(fixtureDir("npm-simple"), stubEntry("left-pad", "1.3.0"));
+    expect(result.statuses).toContain("REMOVABLE");
+    expect(result.removableReason).toBe("not-in-tree");
+  });
+
+  it("keeps untracked overrides that roots still pull", () => {
+    const result = classifyUntrackedOverride(fixtureDir("npm-simple"), stubEntry("qs", "6.11.2"));
+    expect(result.status).toBe("UNTRACKED");
+    expect(result.suggestedAction).toMatch(/express/);
+  });
+});
+
+describe("sortCheckEntries", () => {
+  it("puts NEW before OK", () => {
+    const mk = (pkg: string, status: CheckEntry["status"]): CheckEntry => ({
+      entry: stubEntry(pkg, "1.0.0"),
+      status,
+      statuses: [status],
+      suggestedAction: "",
+      issues: [],
+    });
+    const sorted = sortCheckEntries([mk("z", "OK"), mk("a", "NEW")]);
+    expect(sorted.map((e) => e.entry.package)).toEqual(["a", "z"]);
   });
 });

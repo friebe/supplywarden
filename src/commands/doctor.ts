@@ -50,9 +50,7 @@ export function runDoctor(opts: { cwd: string }): CommandResult {
     issues.push("Lockfile missing or unreadable");
   }
 
-  if (config.audit.enabled) {
-    messages.push(`audit: enabled (minSeverity ${config.audit.minSeverity})`);
-  }
+  messages.push(`audit minSeverity: ${config.audit.minSeverity}`);
 
   const configFile = resolveConfigFile(cwd);
   if (configFile.legacy) {

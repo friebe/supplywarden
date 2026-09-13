@@ -62,21 +62,24 @@ function emit(result: CommandResult, cmd: Command): never {
   for (const msg of result.messages) {
     console.error(msg);
   }
-  if (global.html !== undefined) {
-    const path = typeof global.html === "string" ? global.html : "supplywarden-report.html";
-    writeHtml(result.report, path);
-    console.error(`HTML report: ${path}`);
+  const htmlPath =
+    typeof global.html === "string"
+      ? global.html
+      : global.html !== undefined || global.open
+        ? "supplywarden-report.html"
+        : undefined;
+  if (htmlPath) {
+    writeHtml(result.report, htmlPath);
+    console.error(`HTML report: ${htmlPath}`);
     if (global.open && process.env.SUPPLYWARDEN_TEST !== "1" && process.env.VULNFIX_TEST !== "1") {
-      openReport(path);
+      openReport(htmlPath);
     }
   }
   process.exit(result.exitCode);
 }
 
-function auditFlag(opts: { audit?: boolean; skipAudit?: boolean }): boolean | undefined {
-  if (opts.skipAudit) return false;
-  if (opts.audit) return true;
-  return undefined;
+function auditEnabled(opts: { skipAudit?: boolean }): boolean {
+  return !opts.skipAudit;
 }
 
 /** pnpm run try -- --cwd … forwards a literal "--" as first argv token. */
@@ -101,15 +104,14 @@ withGlobals(
   program
     .command("analyze")
     .argument("[alert.json]", "Dependabot alert JSON; omit to run npm/pnpm/yarn audit")
-    .option("--audit", "run package-manager audit (default when no alert file is given)")
     .option("--skip-audit", "do not run package-manager audit")
     .description("Analyze Dependabot alert(s) or live audit without writing"),
-).action(async (alertPath: string | undefined, opts: { audit?: boolean; skipAudit?: boolean }, cmd: Command) => {
+).action(async (alertPath: string | undefined, opts: { skipAudit?: boolean }, cmd: Command) => {
   emit(
     await runAnalyze({
       cwd: cwdOf(cmd),
       alertPath: alertPath ? resolve(alertPath) : undefined,
-      enableAudit: auditFlag(opts),
+      enableAudit: auditEnabled(opts),
     }),
     cmd,
   );
@@ -120,14 +122,12 @@ withGlobals(
     .command("fix")
     .argument("[alert.json]", "Dependabot alert JSON; omit to run npm/pnpm/yarn audit")
     .option("--apply", "write metadata + package.json")
-    .option("--yes", "accept impact warnings")
-    .option("--audit", "run package-manager audit (default when no alert file is given)")
     .option("--skip-audit", "do not run package-manager audit")
     .description("Plan (and optionally apply) a fix from an alert file or live audit"),
 ).action(
   async (
     alertPath: string | undefined,
-    opts: { apply?: boolean; yes?: boolean; audit?: boolean; skipAudit?: boolean },
+    opts: { apply?: boolean; skipAudit?: boolean },
     cmd: Command,
   ) => {
     emit(
@@ -135,9 +135,8 @@ withGlobals(
         cwd: cwdOf(cmd),
         alertPath: alertPath ? resolve(alertPath) : undefined,
         apply: opts.apply,
-        yes: opts.yes,
         skipInstall: true,
-        enableAudit: auditFlag(opts),
+        enableAudit: auditEnabled(opts),
       }),
       cmd,
     );
@@ -148,23 +147,18 @@ withGlobals(
   program
     .command("check")
     .option("--strict", "exit 1 on overdue high/critical, drift, verify_failed, or new audit findings")
-    .option("--apply", "resolve REMOVABLE/RESOLVED entries")
-    .option("--yes", "apply without extra confirmation")
-    .option("--audit", "run npm/pnpm/yarn audit for untracked findings")
-    .option("--skip-audit", "skip audit even if enabled in config")
-    .description("Classify existing overrides"),
+    .option("--skip-audit", "skip package-manager audit")
+    .description("Audit, triage new findings, and classify existing overrides"),
 ).action(
   async (
-    opts: { strict?: boolean; apply?: boolean; yes?: boolean; audit?: boolean; skipAudit?: boolean },
+    opts: { strict?: boolean; skipAudit?: boolean },
     cmd: Command,
   ) => {
     emit(
       await runCheck({
         cwd: cwdOf(cmd),
         strict: opts.strict,
-        apply: opts.apply,
-        yes: opts.yes,
-        enableAudit: auditFlag(opts),
+        enableAudit: auditEnabled(opts),
       }),
       cmd,
     );

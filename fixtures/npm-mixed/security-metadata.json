@@ -130,6 +130,32 @@
       "createdBy": "fixture",
       "reviewBy": "2026-12-01T00:00:00.000Z",
       "reviewReason": "re-run verify"
+    },
+    {
+      "id": "request-relic",
+      "status": "active",
+      "package": "request",
+      "forcedVersion": "2.88.2",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-p8p7-x288-28g6",
+          "cveId": "CVE-2023-28155",
+          "severity": "medium",
+          "vulnerableRange": "<= 2.88.2",
+          "patchedVersion": "2.88.2"
+        }
+      ],
+      "reason": "Relic: request was dropped from the tree years ago; override left in package.json with no lockfile reference",
+      "strategy": "override",
+      "rootPackages": [],
+      "dependencyChains": [],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2020-06-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "Nothing pulls this package anymore"
     }
   ]
 }

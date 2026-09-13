@@ -1,7 +1,12 @@
 import { loadConfig } from "../config.js";
-import { classifyEntry, reconcileWithAudit } from "../check/classify.js";
-import { readMetadata, writeMetadata } from "../metadata/store.js";
-import { syncOverridesToPackageJson } from "../metadata/sync.js";
+import {
+  classifyEntry,
+  classifyUntrackedOverride,
+  reconcileWithAudit,
+  sortCheckEntries,
+} from "../check/classify.js";
+import { decide } from "../decision/engine.js";
+import { readMetadata } from "../metadata/store.js";
 import { nowIso } from "../util/time.js";
 import {
   createLiveAudit,
@@ -14,17 +19,16 @@ import { analyzeNpmGraph } from "../graph/npm.js";
 import type {
   AuditClient,
   CheckEntry,
-  CheckStatus,
   CommandResult,
+  Decision,
   MetadataEntry,
   PackageAlertGroup,
+  SupplywardenConfig,
 } from "../types.js";
 
 export async function runCheck(opts: {
   cwd: string;
   strict?: boolean;
-  apply?: boolean;
-  yes?: boolean;
   enableAudit?: boolean;
   audit?: AuditClient;
 }): Promise<CommandResult> {
@@ -38,7 +42,7 @@ export async function runCheck(opts: {
   const untracked = untrackedOverrides(cwd, config, metadata);
   classified.push(...untracked);
 
-  const auditEnabled = opts.enableAudit ?? config.audit.enabled;
+  const auditEnabled = opts.enableAudit !== false;
   let auditError: string | undefined;
   const newGroups: PackageAlertGroup[] = [];
 
@@ -53,15 +57,17 @@ export async function runCheck(opts: {
     }
     const uncovered = uncoveredFindings(filtered, metadata.entries);
     newGroups.push(...findingsToGroups(uncovered));
-    classified.push(...newGroups.map((group) => entryFromAuditGroup(cwd, group)));
+    classified.push(...newGroups.map((group) => entryFromAuditGroup(cwd, group, config)));
   }
 
+  const sorted = sortCheckEntries(classified);
+
   const counts: Record<string, number> = {};
-  for (const c of classified) {
+  for (const c of sorted) {
     counts[c.status] = (counts[c.status] ?? 0) + 1;
   }
 
-  const removableCount = classified.filter((c) =>
+  const removableCount = sorted.filter((c) =>
     c.statuses.includes("REMOVABLE") || c.statuses.includes("RESOLVED"),
   ).length;
   const messages = [
@@ -75,9 +81,9 @@ export async function runCheck(opts: {
       `${untracked.length} override(s) in package.json are untracked — run supplywarden init`,
     );
   }
-  if (!classified.length) {
+  if (!sorted.length) {
     messages.push(
-      "Nothing to show: no security-metadata.json entries and no package.json overrides. Run init, analyze/fix, or check --audit.",
+      "Nothing to show: no security-metadata.json entries and no package.json overrides. Run init or analyze/fix.",
     );
   }
   if (auditEnabled) {
@@ -88,25 +94,7 @@ export async function runCheck(opts: {
     );
   }
 
-  let written: string[] = [];
-  if (opts.apply) {
-    const removable = classified.filter((c) =>
-      ["REMOVABLE", "RESOLVED"].includes(c.status as CheckStatus),
-    );
-    for (const item of removable) {
-      const entry = metadata.entries.find((e) => e.id === item.entry.id);
-      if (!entry) continue;
-      entry.status = "resolved";
-      entry.resolvedAt = nowIso();
-      entry.resolution = item.status === "RESOLVED" ? "naturally-resolved" : "root-upgrade-available";
-    }
-    writeMetadata(cwd, config, metadata);
-    syncOverridesToPackageJson(cwd, metadata);
-    written = [config.metadataPath, "package.json"];
-    messages.push(`Resolved ${removable.length} override(s)`);
-  }
-
-  const overdueHigh = classified.some(
+  const overdueHigh = sorted.some(
     (c) =>
       c.statuses.includes("OVERDUE") &&
       c.entry.advisories.some((a) => a.severity === "high" || a.severity === "critical"),
@@ -133,7 +121,6 @@ export async function runCheck(opts: {
   return {
     exitCode,
     messages,
-    writtenFiles: written,
     report: {
       title: `supplywarden check – ${active.length} active overrides`,
       generatedAt: nowIso(),
@@ -145,7 +132,7 @@ export async function runCheck(opts: {
         ...counts,
         ...(auditEnabled ? { auditNew: newGroups.length } : {}),
       },
-      entries: classified,
+      entries: sorted,
       groups: newGroups.length ? newGroups : undefined,
     },
   };
@@ -153,7 +140,7 @@ export async function runCheck(opts: {
 
 function untrackedOverrides(
   cwd: string,
-  config: import("../types.js").SupplywardenConfig,
+  config: SupplywardenConfig,
   metadata: import("../types.js").SecurityMetadata,
 ): CheckEntry[] {
   const imported = importOverridesFromPackageJson(cwd, config, (pkg) => analyzeNpmGraph(cwd, pkg));
@@ -164,50 +151,63 @@ function untrackedOverrides(
   );
   return imported
     .filter((e) => !tracked.has(`${e.package}::${e.forcedVersion}`))
-    .map((entry) => ({
-      entry: { ...entry, id: `untracked:${entry.package}` },
-      status: "UNTRACKED" as const,
-      statuses: ["UNTRACKED" as const],
-      suggestedAction: "Override only in package.json — run `supplywarden init`",
-      issues: [],
-      roots: entry.rootPackages,
-      chains: entry.dependencyChains,
-    }));
+    .map((entry) => classifyUntrackedOverride(cwd, entry));
 }
 
-function entryFromAuditGroup(cwd: string, group: PackageAlertGroup): CheckEntry {
+function newFindingAction(
+  group: PackageAlertGroup,
+  decision: Decision,
+  roots: string[],
+): string {
+  const sev = group.maxSeverity.toUpperCase();
+  if (decision.strategy === "upgrade") {
+    const targets = (decision.upgradeTargets ?? [])
+      .map((t) => (t.from ? `${t.name}@${t.from}` : t.name) + (t.to ? ` → ${t.to}` : ""))
+      .join(", ");
+    return `New ${sev}: UPGRADE ${targets || roots.join(", ") || group.package} — run \`supplywarden fix --apply\``;
+  }
+  const ver = decision.forcedVersion ?? group.forcedVersion ?? "?";
+  const rootPart = roots.length ? ` (roots: ${roots.join(", ")})` : "";
+  return `New ${sev}: OVERRIDE ${group.package}@${ver}${rootPart} — run \`supplywarden fix --apply\``;
+}
+
+function entryFromAuditGroup(
+  cwd: string,
+  group: PackageAlertGroup,
+  config: SupplywardenConfig,
+): CheckEntry {
   const graph = analyzeNpmGraph(cwd, group.package);
+  const decision = decide({ graph, advisories: group.advisories, config });
+  const roots = graph.roots.map((r) => r.name);
+  const chains = graph.chains.map((c) => c.path.join(" → "));
   const entry: MetadataEntry = {
     id: `audit:${group.package}`,
     status: "pending_verify",
     package: group.package,
-    forcedVersion: group.forcedVersion ?? "?",
-    scope: { type: "global" },
+    forcedVersion: decision.forcedVersion ?? group.forcedVersion ?? "?",
+    scope: decision.scope,
     advisories: group.advisories,
     reason: "Untracked finding from package-manager audit",
-    strategy: "override",
-    rootPackages: graph.roots.map((r) => r.name),
-    dependencyChains: graph.chains.map((c) => c.path.join(" → ")),
+    strategy: decision.strategy,
+    rootPackages: roots,
+    dependencyChains: chains,
     packageManager: "npm",
     manifestPath: group.manifestPath,
     createdAt: nowIso(),
     createdBy: "audit",
     reviewBy: nowIso(),
-    reviewReason: "New audit finding – run analyze/fix to track as an override",
+    reviewReason: "New audit finding – run fix --apply to track",
     needsReview: true,
   };
-  const roots = graph.roots.map((r) => r.name);
-  const chains = graph.chains.map((c) => c.path.join(" → "));
   return {
     entry,
     status: "NEW",
     statuses: ["NEW"],
-    suggestedAction: roots.length
-      ? `New (${group.maxSeverity}) via ${roots.join(", ")} — run \`supplywarden why ${group.package}\` then \`supplywarden analyze --audit\``
-      : `New (${group.maxSeverity}) — run \`supplywarden why ${group.package}\` then \`supplywarden analyze --audit\``,
+    suggestedAction: newFindingAction(group, decision, roots),
     issues: [],
     roots,
     chains,
     installedVersions: graph.versions,
+    decision,
   };
 }

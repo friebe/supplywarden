@@ -16,7 +16,6 @@ export const DEFAULT_CONFIG: SupplywardenConfig = {
   impactWarnThreshold: 20,
   impactBlockThreshold: 100,
   audit: {
-    enabled: false,
     minSeverity: "high",
   },
 };
@@ -46,7 +45,9 @@ export function loadConfig(cwd: string): SupplywardenConfig {
     return {
       ...DEFAULT_CONFIG,
       ...raw,
-      audit: { ...DEFAULT_CONFIG.audit, ...(raw.audit ?? {}) },
+      audit: {
+        minSeverity: raw.audit?.minSeverity ?? DEFAULT_CONFIG.audit.minSeverity,
+      },
     };
   } catch {
     return defaults();

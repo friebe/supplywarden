@@ -99,7 +99,23 @@ const FALLBACK_HTML = `<!DOCTYPE html>
     function canRemove(e) {
       return (e.statuses || []).includes('REMOVABLE') || (e.statuses || []).includes('RESOLVED');
     }
-    const removable = (report.entries || []).filter(canRemove);
+    function actionRank(e) {
+      const st = e.statuses || [e.status];
+      if (e.status === 'NEW' || st.includes('NEW')) return 0;
+      if (e.status === 'VERIFY_FAILED' || st.includes('VERIFY_FAILED')) return 1;
+      if (e.status === 'OVERDUE' || st.includes('OVERDUE')) return 2;
+      if (e.status === 'DRIFT' || st.includes('DRIFT')) return 3;
+      if (st.includes('REMOVABLE') || st.includes('RESOLVED')) return 4;
+      if (e.status === 'UNTRACKED' || st.includes('UNTRACKED')) return 5;
+      if (e.status === 'PENDING_VERIFY' || st.includes('PENDING_VERIFY')) return 6;
+      return 7;
+    }
+    const sorted = (report.entries || []).slice().sort((a, b) => {
+      const d = actionRank(a) - actionRank(b);
+      if (d !== 0) return d;
+      return String(a.entry.package).localeCompare(String(b.entry.package));
+    });
+    const removable = sorted.filter(canRemove);
     if (removable.length) {
       const panel = document.getElementById('removable');
       panel.className = 'panel';
@@ -128,7 +144,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
     function render(filter) {
       const tbody = document.getElementById('rows');
       tbody.innerHTML = '';
-      for (const e of (report.entries || [])) {
+      for (const e of sorted) {
         const hay = (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '')).toLowerCase();
         if (filter && !hay.includes(filter)) continue;
         const tr = document.createElement('tr');

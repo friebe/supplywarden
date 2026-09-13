@@ -87,8 +87,6 @@ export type SecurityMetadata = {
 };
 
 export type AuditConfig = {
-  /** Run npm/pnpm/yarn audit to discover untracked vulnerabilities. */
-  enabled: boolean;
   /** Ignore audit findings below this severity. */
   minSeverity: Severity;
 };
@@ -168,6 +166,7 @@ export type CheckEntry = {
   chains?: string[];
   installedVersions?: string[];
   verifyOutcome?: VerifyOutcome;
+  decision?: Decision;
 };
 
 export type ReportModel = {

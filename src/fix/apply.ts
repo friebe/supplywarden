@@ -27,7 +27,6 @@ export type ApplyOptions = {
   graph: GraphAnalysis;
   decision: Decision;
   apply: boolean;
-  yes?: boolean;
   skipInstall?: boolean;
   registry?: RegistryClient;
   audit?: AuditClient;
@@ -80,14 +79,10 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     };
   }
 
-  if (impact.warning && !opts.yes) {
-    return {
-      exitCode: 1,
-      report,
-      messages: [
-        `Impact warning: ${impact.changedPackages} packages (threshold ${config.impactWarnThreshold}). Re-run with --yes to apply.`,
-      ],
-    };
+  if (impact.warning) {
+    messages.push(
+      `Impact: ${impact.changedPackages} packages (≥ warn threshold ${config.impactWarnThreshold})`,
+    );
   }
 
   const files = [config.metadataPath, "package.json"];

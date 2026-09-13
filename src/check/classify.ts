@@ -184,7 +184,7 @@ function suggest(
         ? `Consider a root upgrade (${roots.join(", ")}) — run \`supplywarden why ${pkg}\` then \`supplywarden verify --apply\``
         : `Override resolved naturally — run \`supplywarden verify --apply\``;
     case "RESOLVED":
-      return `No longer in the lockfile / no longer vulnerable — run \`supplywarden check --apply\``;
+      return `No longer in the lockfile / no longer vulnerable — run \`supplywarden verify --apply\``;
     case "OVERDUE":
       return `Review ${daysOverdue(entry.reviewBy, now)}d overdue — run \`supplywarden why ${pkg}\``;
     case "DRIFT":
@@ -194,12 +194,81 @@ function suggest(
     case "PENDING_VERIFY":
       return `Pending verify — run \`supplywarden verify\``;
     case "NEW":
-      return `Untracked audit finding — run \`supplywarden why ${pkg}\` then \`supplywarden analyze --audit\``;
+      return `Untracked audit finding — run \`supplywarden why ${pkg}\` then \`supplywarden fix --apply\``;
     case "UNTRACKED":
-      return "Override only in package.json — run `supplywarden init`";
+      return suggestUntracked(undefined, pkg, roots);
     case "STALE":
       return `Override is stale — run \`supplywarden why ${pkg}\``;
     default:
-      return `Override still required — run \`supplywarden why ${pkg}\``;
+      return roots.length
+        ? `Override still required — pulled by ${roots.join(", ")}. Run \`supplywarden why ${pkg}\``
+        : `Override still required — run \`supplywarden why ${pkg}\``;
   }
+}
+
+function suggestUntracked(reason: RemovableReason | undefined, pkg: string, roots: string[]): string {
+  if (reason === "not-in-tree") {
+    return "package.json override not used (not in lockfile, no roots) — run `supplywarden init` then `supplywarden verify --apply`";
+  }
+  if (reason === "root-upgrade-candidate") {
+    return `Untracked override only forced version, roots ${roots.join(", ")} — run \`supplywarden init\` then \`supplywarden verify --apply\``;
+  }
+  if (roots.length) {
+    return `Untracked override still pulled by ${roots.join(", ")} — run \`supplywarden init\``;
+  }
+  return "Override only in package.json — run `supplywarden init`";
+}
+
+export function classifyUntrackedOverride(cwd: string, entry: MetadataEntry): CheckEntry {
+  const graph = analyzeNpmGraph(cwd, entry.package);
+  const roots = graph.roots.map((r) => r.name);
+  const chains = graph.chains.map((c) => c.path.join(" → "));
+  const statuses: CheckStatus[] = ["UNTRACKED"];
+  let removableReason: RemovableReason | undefined;
+
+  if (!graph.inTree) {
+    statuses.push("REMOVABLE");
+    removableReason = "not-in-tree";
+  } else if (
+    graph.versions.length === 1 &&
+    graph.versions[0] === entry.forcedVersion &&
+    roots.length > 0 &&
+    roots.length <= 3
+  ) {
+    statuses.push("REMOVABLE");
+    removableReason = "root-upgrade-candidate";
+  }
+
+  return {
+    entry: {
+      ...entry,
+      id: entry.id.startsWith("untracked:") ? entry.id : `untracked:${entry.package}`,
+    },
+    status: pickPrimary(statuses),
+    statuses,
+    suggestedAction: suggestUntracked(removableReason, entry.package, roots),
+    issues: [],
+    removableReason,
+    roots,
+    chains,
+    installedVersions: graph.versions,
+  };
+}
+
+export function sortCheckEntries(entries: CheckEntry[]): CheckEntry[] {
+  const rank = (e: CheckEntry): number => {
+    if (e.status === "NEW" || e.statuses.includes("NEW")) return 0;
+    if (e.status === "VERIFY_FAILED" || e.statuses.includes("VERIFY_FAILED")) return 1;
+    if (e.status === "OVERDUE" || e.statuses.includes("OVERDUE")) return 2;
+    if (e.status === "DRIFT" || e.statuses.includes("DRIFT")) return 3;
+    if (e.statuses.includes("REMOVABLE") || e.statuses.includes("RESOLVED")) return 4;
+    if (e.status === "UNTRACKED" || e.statuses.includes("UNTRACKED")) return 5;
+    if (e.status === "PENDING_VERIFY" || e.statuses.includes("PENDING_VERIFY")) return 6;
+    return 7;
+  };
+  return [...entries].sort((a, b) => {
+    const d = rank(a) - rank(b);
+    if (d !== 0) return d;
+    return a.entry.package.localeCompare(b.entry.package);
+  });
 }
