@@ -1,4 +1,6 @@
+import { specAtLeast, specFloorSafe, specMinVersion, versionSatisfiesSpec } from "../util/semver-spec.js";
 import { stillVulnerable } from "../decision/engine.js";
+import { highestPatchedVersion } from "../alerts/dependabot.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
 import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
 import { daysOverdue, isPast } from "../util/time.js";
@@ -11,14 +13,41 @@ import type {
   ValidationIssue,
 } from "../types.js";
 
+function declaredDepRange(cwd: string, manifestPath: string, pkgName: string): string | undefined {
+  try {
+    const pkg = readPackageJson(cwd, manifestPath);
+    const bags = [pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies];
+    for (const bag of bags) {
+      if (bag && typeof bag === "object" && pkgName in (bag as Record<string, unknown>)) {
+        const range = (bag as Record<string, unknown>)[pkgName];
+        if (typeof range === "string") return range.replace(/^npm:/, "");
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/** Direct dep and/or override spec already require at least the advisory's patched floor. */
+function directDepAlreadyAtPatched(cwd: string, entry: MetadataEntry): boolean {
+  const patched = highestPatchedVersion(entry.advisories);
+  const overrideFloor = specMinVersion(entry.forcedVersion);
+  if (patched && overrideFloor && !specAtLeast(entry.forcedVersion, patched)) return false;
+  const range = declaredDepRange(cwd, entry.manifestPath, entry.package);
+  if (!range) return false;
+  if (entry.advisories.length) {
+    return specFloorSafe(range, entry.advisories) && specFloorSafe(entry.forcedVersion, entry.advisories);
+  }
+  return Boolean(overrideFloor && specMinVersion(range) === overrideFloor);
+}
+
 function overridePresent(cwd: string, entry: MetadataEntry): boolean {
   try {
     const pkg = readPackageJson(cwd, entry.manifestPath);
     const found = extractExistingOverrides(pkg);
     return found.some(
-      (o) =>
-        o.package === entry.package &&
-        o.version === entry.forcedVersion,
+      (o) => o.package === entry.package && specAtLeast(o.version, entry.forcedVersion),
     );
   } catch {
     return false;
@@ -57,27 +86,32 @@ export function classifyEntry(
   const vulnVersions = graph.versions.filter((v) =>
     entry.advisories.length ? stillVulnerable(v, entry.advisories) : false,
   );
+  const onlyForcedInTree =
+    graph.versions.length === 1 && versionSatisfiesSpec(graph.versions[0]!, entry.forcedVersion);
+  const overrideSafe =
+    entry.advisories.length === 0 || specFloorSafe(entry.forcedVersion, entry.advisories);
+  const lockfileSafe =
+    vulnVersions.length === 0 && (entry.advisories.length > 0 || onlyForcedInTree);
+  const alreadyPatched = directDepAlreadyAtPatched(cwd, entry);
 
-  if (entry.status === "active" && graph.inTree && entry.advisories.length === 0) {
-    if (graph.versions.length === 1 && graph.versions[0] === entry.forcedVersion) {
-      statuses.push("REMOVABLE");
-      removableReason = "root-upgrade-candidate";
-    }
-  } else if (entry.status === "active" && !graph.inTree && entry.advisories.length > 0) {
+  if (entry.status === "active" && !graph.inTree) {
     statuses.push("RESOLVED");
     statuses.push("REMOVABLE");
     removableReason = "not-in-tree";
+  } else if (entry.status === "active" && alreadyPatched && lockfileSafe) {
+    statuses.push("RESOLVED");
+    statuses.push("REMOVABLE");
+    removableReason = "already-at-patched";
+  } else if (entry.status === "active" && graph.inTree && entry.advisories.length === 0) {
+    if (onlyForcedInTree) {
+      statuses.push("REMOVABLE");
+      removableReason = "root-upgrade-candidate";
+    }
   } else if (entry.status === "active" && graph.inTree && vulnVersions.length === 0 && entry.advisories.length > 0) {
     statuses.push("RESOLVED");
     statuses.push("REMOVABLE");
     removableReason = "no-vulnerable-version";
-  } else if (
-    entry.status === "active" &&
-    graph.inTree &&
-    graph.versions.length === 1 &&
-    graph.versions[0] === entry.forcedVersion &&
-    (entry.advisories.length === 0 || !stillVulnerable(entry.forcedVersion, entry.advisories))
-  ) {
+  } else if (entry.status === "active" && graph.inTree && onlyForcedInTree && overrideSafe) {
     const rootsCanTakeIt = graph.roots.length > 0 && graph.roots.length <= 3;
     if (rootsCanTakeIt) {
       statuses.push("REMOVABLE");
@@ -96,7 +130,7 @@ export function classifyEntry(
     entry,
     status: primary,
     statuses,
-    suggestedAction: suggest(primary, entry, roots, now),
+    suggestedAction: suggest(primary, entry, roots, now, removableReason),
     issues,
     removableReason,
     roots,
@@ -118,6 +152,7 @@ export function reconcileWithAudit(classified: CheckEntry[], findings: AuditFind
       item.statuses.includes("REMOVABLE") ||
       item.removableReason === "not-in-tree" ||
       item.removableReason === "no-vulnerable-version" ||
+      item.removableReason === "already-at-patched" ||
       (item.entry.advisories.length > 0 &&
         (item.installedVersions ?? []).every((v) => !stillVulnerable(v, item.entry.advisories))) ||
       (item.installedVersions ?? []).length === 0;
@@ -135,9 +170,13 @@ export function reconcileWithAudit(classified: CheckEntry[], findings: AuditFind
       status,
       statuses: list,
       removableReason: item.removableReason ?? "audit-clear",
-      suggestedAction: suggest(status, item.entry, item.roots ?? [], new Date()),
+      suggestedAction: suggest(status, item.entry, item.roots ?? [], new Date(), item.removableReason ?? "audit-clear"),
     };
   });
+}
+
+export function isDropCandidate(entry: CheckEntry): boolean {
+  return entry.statuses.includes("REMOVABLE") || entry.statuses.includes("RESOLVED");
 }
 
 export function pickPrimary(statuses: CheckStatus[]): CheckStatus {
@@ -162,6 +201,8 @@ export function removableReasonLabel(reason?: RemovableReason): string {
       return "No longer in the lockfile";
     case "no-vulnerable-version":
       return "No vulnerable version left in the tree";
+    case "already-at-patched":
+      return "package.json already depends on the patched version — override is leftover";
     case "root-upgrade-candidate":
       return "Only the forced version is in the tree — consider a root upgrade";
     case "audit-clear":
@@ -176,23 +217,30 @@ function suggest(
   entry: MetadataEntry,
   roots: string[],
   now: Date,
+  reason?: RemovableReason,
 ): string {
   const pkg = entry.package;
   switch (status) {
     case "REMOVABLE":
+      if (reason === "already-at-patched") {
+        return `package.json already depends on patched ${pkg} — leftover override, run \`supplywarden verify ${pkg} --apply\``;
+      }
       return roots.length
-        ? `Consider a root upgrade (${roots.join(", ")}) — run \`supplywarden why ${pkg}\` then \`supplywarden verify --apply\``
-        : `Override resolved naturally — run \`supplywarden verify --apply\``;
+        ? `Consider a root upgrade (${roots.join(", ")}) — run \`supplywarden why ${pkg}\` then \`supplywarden verify ${pkg} --apply\``
+        : `Override resolved naturally — run \`supplywarden verify ${pkg} --apply\``;
     case "RESOLVED":
-      return `No longer in the lockfile / no longer vulnerable — run \`supplywarden verify --apply\``;
+      if (reason === "already-at-patched") {
+        return `package.json already depends on patched ${pkg} — leftover override, run \`supplywarden verify ${pkg} --apply\``;
+      }
+      return `No longer in the lockfile / no longer vulnerable — run \`supplywarden verify ${pkg} --apply\``;
     case "OVERDUE":
       return `Review ${daysOverdue(entry.reviewBy, now)}d overdue — run \`supplywarden why ${pkg}\``;
     case "DRIFT":
       return "package.json drifted — run `supplywarden sync`";
     case "VERIFY_FAILED":
-      return `Last apply failed — run \`supplywarden why ${pkg}\` then \`supplywarden verify\``;
+      return `Last apply failed — run \`supplywarden why ${pkg}\` then \`supplywarden verify ${pkg}\``;
     case "PENDING_VERIFY":
-      return `Pending verify — run \`supplywarden verify\``;
+      return `Pending verify — run \`supplywarden verify ${pkg}\``;
     case "NEW":
       return `Untracked audit finding — run \`supplywarden why ${pkg}\` then \`supplywarden fix --apply\``;
     case "UNTRACKED":
@@ -208,10 +256,13 @@ function suggest(
 
 function suggestUntracked(reason: RemovableReason | undefined, pkg: string, roots: string[]): string {
   if (reason === "not-in-tree") {
-    return "package.json override not used (not in lockfile, no roots) — run `supplywarden init` then `supplywarden verify --apply`";
+    return `package.json override not used (not in lockfile, no roots) — run \`supplywarden init\` then \`supplywarden verify ${pkg} --apply\``;
+  }
+  if (reason === "already-at-patched") {
+    return `package.json already depends on patched ${pkg} — leftover override, run \`supplywarden init\` then \`supplywarden verify ${pkg} --apply\``;
   }
   if (reason === "root-upgrade-candidate") {
-    return `Untracked override only forced version, roots ${roots.join(", ")} — run \`supplywarden init\` then \`supplywarden verify --apply\``;
+    return `Untracked override only forced version, roots ${roots.join(", ")} — run \`supplywarden init\` then \`supplywarden verify ${pkg} --apply\``;
   }
   if (roots.length) {
     return `Untracked override still pulled by ${roots.join(", ")} — run \`supplywarden init\``;
@@ -230,8 +281,16 @@ export function classifyUntrackedOverride(cwd: string, entry: MetadataEntry): Ch
     statuses.push("REMOVABLE");
     removableReason = "not-in-tree";
   } else if (
+    directDepAlreadyAtPatched(cwd, entry) &&
+    (entry.advisories.length
+      ? !graph.versions.some((v) => stillVulnerable(v, entry.advisories))
+      : graph.versions.length === 1 && versionSatisfiesSpec(graph.versions[0]!, entry.forcedVersion))
+  ) {
+    statuses.push("REMOVABLE");
+    removableReason = "already-at-patched";
+  } else if (
     graph.versions.length === 1 &&
-    graph.versions[0] === entry.forcedVersion &&
+    versionSatisfiesSpec(graph.versions[0]!, entry.forcedVersion) &&
     roots.length > 0 &&
     roots.length <= 3
   ) {

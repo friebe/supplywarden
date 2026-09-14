@@ -30,6 +30,96 @@ describe("classifyEntry", () => {
     expect(result.removableReason).toBe("no-vulnerable-version");
     expect(result.roots?.length).toBeGreaterThan(0);
   });
+
+  it("marks leftover override when package.json already depends on the min patched version", () => {
+    const result = classifyEntry(fixtureDir("npm-mixed"), {
+      id: "lodash-removable",
+      status: "active",
+      package: "lodash",
+      forcedVersion: "4.17.21",
+      scope: { type: "global" },
+      advisories: [
+        {
+          ghsaId: "GHSA-35jh-r3h4-6jhm",
+          severity: "high",
+          vulnerableRange: "< 4.17.21",
+          patchedVersion: "4.17.21",
+        },
+      ],
+      reason: "Lockfile already on patched lodash@4.17.21",
+      strategy: "override",
+      rootPackages: ["lodash"],
+      dependencyChains: [],
+      packageManager: "npm",
+      manifestPath: "package.json",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      createdBy: "fixture",
+      reviewBy: "2026-12-01T00:00:00.000Z",
+      reviewReason: "check",
+    });
+    expect(result.statuses).toContain("REMOVABLE");
+    expect(result.removableReason).toBe("already-at-patched");
+    expect(result.suggestedAction).toMatch(/leftover override/);
+  });
+
+  it("treats ^patched override as covering the advisory when the dep range is already safe", () => {
+    const result = classifyEntry(fixtureDir("npm-mixed"), {
+      id: "lodash-removable",
+      status: "active",
+      package: "lodash",
+      forcedVersion: "^4.17.21",
+      scope: { type: "global" },
+      advisories: [
+        {
+          ghsaId: "GHSA-35jh-r3h4-6jhm",
+          severity: "high",
+          vulnerableRange: "< 4.17.21",
+          patchedVersion: "4.17.21",
+        },
+      ],
+      reason: "range override",
+      strategy: "override",
+      rootPackages: ["lodash"],
+      dependencyChains: [],
+      packageManager: "npm",
+      manifestPath: "package.json",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      createdBy: "fixture",
+      reviewBy: "2026-12-01T00:00:00.000Z",
+      reviewReason: "check",
+    });
+    expect(result.statuses).not.toContain("DRIFT");
+    expect(result.removableReason).toBe("already-at-patched");
+  });
+
+  it("does not treat an override floor below the patched version as already-at-patched", () => {
+    const result = classifyEntry(fixtureDir("npm-mixed"), {
+      id: "lodash-weak",
+      status: "active",
+      package: "lodash",
+      forcedVersion: "^4.17.0",
+      scope: { type: "global" },
+      advisories: [
+        {
+          ghsaId: "GHSA-35jh-r3h4-6jhm",
+          severity: "high",
+          vulnerableRange: "< 4.17.21",
+          patchedVersion: "4.17.21",
+        },
+      ],
+      reason: "weak range",
+      strategy: "override",
+      rootPackages: ["lodash"],
+      dependencyChains: [],
+      packageManager: "npm",
+      manifestPath: "package.json",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      createdBy: "fixture",
+      reviewBy: "2026-12-01T00:00:00.000Z",
+      reviewReason: "check",
+    });
+    expect(result.removableReason).not.toBe("already-at-patched");
+  });
 });
 
 describe("reconcileWithAudit", () => {

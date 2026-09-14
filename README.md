@@ -7,7 +7,7 @@ once:      doctor → init
 everyday:  check [--strict]
 review:    check --open
 write:     fix --apply
-cleanup:   verify [--apply]
+cleanup:   verify [pkg] [--apply]
 drift:     sync
 ```
 
@@ -16,9 +16,10 @@ npx supplywarden doctor
 npx supplywarden init                 # only if package.json already has overrides
 npx supplywarden check --strict       # CI
 npx supplywarden check --open         # local HTML report
-npx supplywarden fix --apply          # no file: audit; or pass a Dependabot JSON
-npx supplywarden verify               # probe REMOVABLE (install + audit, then restore)
-npx supplywarden verify --apply       # drop only confirmed overrides from package.json
+npx supplywarden fix --apply          # NEW only: write upgrade/override
+npx supplywarden verify qs            # drop qs override, install, audit, restore
+npx supplywarden verify qs --apply    # same, and keep the drop if the vuln is gone
+npx supplywarden verify --apply       # all REMOVABLE leftovers
 npx supplywarden sync                 # metadata → package.json if someone edited overrides by hand
 ```
 
@@ -27,11 +28,20 @@ npx supplywarden sync                 # metadata → package.json if someone edi
 | `doctor` | PATH, lockfile, metadata. No CVE scan. |
 | `init` | Import existing overrides into `security-metadata.json`. |
 | `check` | Audit, triage NEW (upgrade vs override), say if overrides are still needed. `--strict` fails CI on overdue/drift/new/untracked. |
-| `fix --apply` | Write the upgrade/override from audit or a Dependabot JSON file. |
-| `verify [--apply]` | Prove a REMOVABLE override: drop → install → audit. Without `--apply` always restore; with `--apply` remove only confirmed ones. |
+| `fix --apply` | Write **new** findings: override or root-upgrade into `package.json` + metadata. No file → audit; or pass a Dependabot JSON. Does **not** drop REMOVABLE. |
+| `verify [pkg] [--apply]` | Temporarily drop an override, `install` + `audit`, see if the vuln comes back. No pkg → all **REMOVABLE** leftovers. With a pkg → that override even if `check` still lists it as needed. Without `--apply` always restore; with `--apply` keep the drop only if confirmed. |
 | `sync` | Rewrite `package.json` overrides from metadata. |
 
-`check` only reads. The only way to drop an override is `verify --apply`.
+`check` only reads. After `check`, pick the write command from the status — not from habit:
+
+| `check` shows | Next command | What it does |
+|---------------|--------------|--------------|
+| **NEW** | `fix --apply` | Writes the recommended upgrade or override. |
+| **REMOVABLE** / leftover | `verify <pkg> --apply` | Removes that override from `package.json` (after probe). |
+| OVERDUE / DRIFT / UNTRACKED | `why` / `sync` / `init` | Not `fix`. |
+| nothing to write | — | `fix --apply` will say there are no new findings (and point you at `verify --apply` if something is REMOVABLE). |
+
+`fix --apply` is not the everyday button. Everyday is `check`. Use `fix` only when you want those NEW rows in the tree. Use `verify <pkg>` to test dropping one override; `verify --apply` without a package name only touches leftovers `check` already marked REMOVABLE.
 
 ## `--strict`
 

@@ -71,6 +71,15 @@ describe("audit coverage", () => {
     ).toBe(true);
   });
 
+  it("treats a ^patched override as covering the finding", () => {
+    expect(
+      isFindingCovered(
+        { package: "qs", severity: "high", range: "< 6.11.0" },
+        [{ ...entry, forcedVersion: "^6.11.2" }],
+      ),
+    ).toBe(true);
+  });
+
   it("does not cover a still-vulnerable override", () => {
     expect(
       isFindingCovered(

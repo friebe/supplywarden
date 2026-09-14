@@ -9,6 +9,7 @@ import { analyzeNpmGraph } from "../graph/npm.js";
 import { applyFix } from "../fix/apply.js";
 import { createLiveRegistry } from "../registry/verify.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
+import { listDropCandidates } from "./check.js";
 import { nowIso } from "../util/time.js";
 import type { AuditClient, CommandResult, PackageAlertGroup, RegistryClient } from "../types.js";
 
@@ -51,19 +52,21 @@ export async function runFix(opts: {
 
   const groups = groupsResult.groups;
   if (!groups.length) {
+    const removable = listDropCandidates(cwd, config);
+    const hint = removable.length
+      ? `${removable.length} existing override(s) are REMOVABLE (${removable.map((e) => e.entry.package).join(", ")}) — run \`supplywarden verify --apply\` to drop them. \`fix --apply\` is only for new findings.`
+      : opts.alertPath
+        ? "No package alerts found in input"
+        : "Audit found no vulnerabilities at the configured minimum severity";
     return {
       exitCode: 1,
-      messages: [
-        opts.alertPath
-          ? "No package alerts found in input"
-          : "Audit found no vulnerabilities at the configured minimum severity",
-      ],
+      messages: [hint],
       report: {
         title: "analyze: empty",
         generatedAt: nowIso(),
         cwd,
-        summary: { groups: 0 },
-        entries: [],
+        summary: { groups: 0, removable: removable.length },
+        entries: removable,
       },
     };
   }

@@ -2,6 +2,7 @@ import { loadConfig } from "../config.js";
 import {
   classifyEntry,
   classifyUntrackedOverride,
+  isDropCandidate,
   reconcileWithAudit,
   sortCheckEntries,
 } from "../check/classify.js";
@@ -39,7 +40,7 @@ export async function runCheck(opts: {
     (e) => e.status === "active" || e.status === "pending_verify" || e.status === "verify_failed",
   );
   const classified = active.map((e) => classifyEntry(cwd, e));
-  const untracked = untrackedOverrides(cwd, config, metadata);
+  const untracked = listUntrackedOverrides(cwd, config, metadata);
   classified.push(...untracked);
 
   const auditEnabled = opts.enableAudit !== false;
@@ -138,7 +139,35 @@ export async function runCheck(opts: {
   };
 }
 
-function untrackedOverrides(
+export function listTrackedAndUntrackedOverrides(
+  cwd: string,
+  config: SupplywardenConfig,
+): CheckEntry[] {
+  const metadata = readMetadata(cwd, config);
+  const tracked = metadata.entries
+    .filter((e) => e.status === "active" || e.status === "pending_verify" || e.status === "verify_failed")
+    .map((e) => classifyEntry(cwd, e));
+  const untracked = listUntrackedOverrides(cwd, config, metadata);
+  return [...tracked, ...untracked];
+}
+
+export function listDropCandidates(cwd: string, config: SupplywardenConfig): CheckEntry[] {
+  return listTrackedAndUntrackedOverrides(cwd, config).filter(isDropCandidate);
+}
+
+export function listOverridesToProbe(
+  cwd: string,
+  config: SupplywardenConfig,
+  pkg?: string,
+): CheckEntry[] {
+  const all = listTrackedAndUntrackedOverrides(cwd, config);
+  if (pkg) {
+    return all.filter((e) => e.entry.package === pkg);
+  }
+  return all.filter(isDropCandidate);
+}
+
+export function listUntrackedOverrides(
   cwd: string,
   config: SupplywardenConfig,
   metadata: import("../types.js").SecurityMetadata,

@@ -1,23 +1,30 @@
 import { analyzeNpmGraph } from "../graph/npm.js";
 import { stillVulnerable } from "../decision/engine.js";
 import { loadConfig } from "../config.js";
-import { classifyEntry } from "../check/classify.js";
+import { listOverridesToProbe } from "./check.js";
 import { readMetadata, writeMetadata } from "../metadata/store.js";
-import { syncOverridesToPackageJson } from "../metadata/sync.js";
+import { deleteOverrideFromManifest, syncOverridesToPackageJson } from "../metadata/sync.js";
 import { createLiveAudit, filterFindings } from "../audit/client.js";
 import { createLiveInstall } from "../install/client.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { nowIso } from "../util/time.js";
-import type {
-  AuditClient,
-  CheckEntry,
-  CheckStatus,
-  CommandResult,
-  InstallClient,
-} from "../types.js";
+import type { AuditClient, CheckEntry, CommandResult, InstallClient } from "../types.js";
+
+function leftoverHeuristic(entry: CheckEntry): boolean {
+  return (
+    entry.removableReason === "not-in-tree" ||
+    entry.removableReason === "already-at-patched"
+  );
+}
+
+function overrideConflictPackage(error: string): string | undefined {
+  const match = error.match(/Override for ([^\s@]+)@/i);
+  return match?.[1];
+}
 
 export async function runVerify(opts: {
   cwd: string;
+  package?: string;
   apply?: boolean;
   skipInstall?: boolean;
   audit?: AuditClient;
@@ -25,19 +32,25 @@ export async function runVerify(opts: {
 }): Promise<CommandResult> {
   const cwd = opts.cwd;
   const config = loadConfig(cwd);
-  const metadata = readMetadata(cwd, config);
-  const active = metadata.entries.filter((e) => e.status === "active");
-  const classified = active.map((e) => classifyEntry(cwd, e));
-  const candidates = classified.filter((c) =>
-    ["REMOVABLE", "RESOLVED"].includes(c.status as CheckStatus),
-  );
+  const pkg = opts.package;
+  const candidates = listOverridesToProbe(cwd, config, pkg);
+  const classified = candidates;
 
   if (!candidates.length) {
+    const messages = pkg
+      ? [
+          `verify: no override for ${pkg} in package.json or security-metadata.json`,
+          `Inspect with \`supplywarden why ${pkg}\`. Without a package name, verify only probes REMOVABLE leftovers.`,
+        ]
+      : [
+          "verify: no REMOVABLE/RESOLVED overrides to probe",
+          "Pass a package to try dropping that one override (`supplywarden verify qs`), even if check has not marked it REMOVABLE.",
+        ];
     return {
-      exitCode: 0,
-      messages: ["verify: no REMOVABLE/RESOLVED overrides to probe"],
+      exitCode: pkg ? 1 : 0,
+      messages,
       report: {
-        title: "supplywarden verify – nothing to probe",
+        title: pkg ? `supplywarden verify ${pkg} – nothing to probe` : "supplywarden verify – nothing to probe",
         generatedAt: nowIso(),
         cwd,
         summary: { probed: 0 },
@@ -51,33 +64,50 @@ export async function runVerify(opts: {
   const files = [...PROJECT_SNAPSHOT_FILES, config.metadataPath];
   const snap = snapshotFiles(cwd, files);
   const probed: CheckEntry[] = [];
-  const messages: string[] = [`supplywarden verify – ${candidates.length} candidate(s)`];
+  const messages: string[] = [
+    pkg
+      ? `supplywarden verify ${pkg} – probing 1 override (drop → install → audit)`
+      : `supplywarden verify – ${candidates.length} candidate(s)`,
+  ];
   let needResync = false;
 
   for (const candidate of candidates) {
     restoreFiles(cwd, snap);
     const working = readMetadata(cwd, config);
     const entry = working.entries.find((e) => e.id === candidate.entry.id);
-    if (!entry) continue;
-    entry.status = "resolved";
-    entry.resolvedAt = nowIso();
-    entry.resolution = "verify-probe";
-    writeMetadata(cwd, config, working);
-    syncOverridesToPackageJson(cwd, working, entry.manifestPath);
+    if (entry) {
+      entry.status = "resolved";
+      entry.resolvedAt = nowIso();
+      entry.resolution = "verify-probe";
+      writeMetadata(cwd, config, working);
+      syncOverridesToPackageJson(cwd, working, entry.manifestPath);
+    } else {
+      deleteOverrideFromManifest(cwd, candidate.entry.package);
+    }
 
-    if (!opts.skipInstall) {
+    let installedOk = opts.skipInstall || leftoverHeuristic(candidate);
+    if (!opts.skipInstall && !leftoverHeuristic(candidate)) {
       const installed = await install.install(cwd);
       if (!installed.ok) {
+        const conflictPkg = overrideConflictPackage(installed.error ?? "");
+        const unrelated = Boolean(conflictPkg && conflictPkg !== candidate.entry.package);
         restoreFiles(cwd, snap);
-        probed.push({
-          ...candidate,
-          verifyOutcome: "VERIFY_FAILED",
-          suggestedAction: `Install failed — keep override (${installed.error ?? "install failed"}); retry with \`supplywarden verify\``,
-        });
-        messages.push(`${candidate.entry.package}: KEEP (install failed)`);
-        continue;
+        if (!unrelated) {
+          probed.push({
+            ...candidate,
+            verifyOutcome: "VERIFY_FAILED",
+            suggestedAction: `Install failed — keep override (${installed.error ?? "install failed"}); retry with \`supplywarden verify ${candidate.entry.package}\``,
+          });
+          messages.push(`${candidate.entry.package}: VERIFY_FAILED (install failed)`);
+          continue;
+        }
+        messages.push(
+          `${candidate.entry.package}: install skipped (unrelated override conflict: ${conflictPkg})`,
+        );
+      } else {
+        installedOk = true;
+        needResync = true;
       }
-      needResync = true;
     }
 
     const graph = analyzeNpmGraph(cwd, candidate.entry.package);
@@ -92,18 +122,18 @@ export async function runVerify(opts: {
     );
 
     const keep =
-      Boolean(auditResult.error) ||
       pkgFindings.length > 0 ||
-      stillVuln.length > 0;
+      stillVuln.length > 0 ||
+      (Boolean(auditResult.error) && !leftoverHeuristic(candidate) && installedOk);
 
     restoreFiles(cwd, snap);
 
     if (keep) {
-      const why = auditResult.error
-        ? `audit failed: ${auditResult.error}`
-        : pkgFindings.length
-          ? `audit still reports ${pkgFindings.length} finding(s)`
-          : `lockfile still has vulnerable version(s): ${stillVuln.join(", ")}`;
+      const why = pkgFindings.length
+        ? `audit still reports ${pkgFindings.length} finding(s)`
+        : stillVuln.length
+          ? `lockfile still has vulnerable version(s): ${stillVuln.join(", ")}`
+          : `audit failed: ${auditResult.error}`;
       probed.push({
         ...candidate,
         verifyOutcome: "KEEP",
@@ -115,8 +145,8 @@ export async function runVerify(opts: {
         ...candidate,
         verifyOutcome: "CONFIRMED_REMOVABLE",
         suggestedAction: graph.inTree
-          ? "Verify confirmed: override can be removed (tree is no longer vulnerable) — run `supplywarden verify --apply`"
-          : "Verify confirmed: package is no longer in the tree — run `supplywarden verify --apply`",
+          ? `Verify confirmed: override can be removed — run \`supplywarden verify ${candidate.entry.package} --apply\``
+          : `Verify confirmed: package is no longer in the tree — run \`supplywarden verify ${candidate.entry.package} --apply\``,
       });
       messages.push(`${candidate.entry.package}: CONFIRMED_REMOVABLE`);
     }
@@ -134,21 +164,25 @@ export async function runVerify(opts: {
     const next = readMetadata(cwd, config);
     for (const item of confirmed) {
       const entry = next.entries.find((e) => e.id === item.entry.id);
-      if (!entry) continue;
-      entry.status = "resolved";
-      entry.resolvedAt = nowIso();
-      entry.resolution = "verify-confirmed";
+      if (entry) {
+        entry.status = "resolved";
+        entry.resolvedAt = nowIso();
+        entry.resolution = "verify-confirmed";
+      }
+      deleteOverrideFromManifest(cwd, item.entry.package);
     }
     writeMetadata(cwd, config, next);
-    syncOverridesToPackageJson(cwd, next);
     written = [config.metadataPath, "package.json"];
     messages.push(`Applied ${confirmed.length} confirmed removal(s)`);
+  } else if (opts.apply && !confirmed.length) {
+    messages.push(
+      "verify --apply: nothing confirmed as removable (install/audit kept every candidate). See KEEP/VERIFY_FAILED above.",
+    );
   } else if (!opts.apply && confirmed.length) {
     messages.push("Dry-run: pass --apply to drop confirmed overrides");
   }
 
   const failed = probed.some((p) => p.verifyOutcome === "VERIFY_FAILED");
-  const kept = probed.filter((p) => p.verifyOutcome === "KEEP").length;
 
   return {
     exitCode: failed ? 1 : 0,
@@ -161,7 +195,7 @@ export async function runVerify(opts: {
       summary: {
         probed: probed.length,
         confirmed: confirmed.length,
-        keep: kept,
+        keep: probed.filter((p) => p.verifyOutcome === "KEEP").length,
         verifyFailed: probed.filter((p) => p.verifyOutcome === "VERIFY_FAILED").length,
       },
       entries: probed,

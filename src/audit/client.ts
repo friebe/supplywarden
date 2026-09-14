@@ -1,5 +1,5 @@
 import { groupAlerts, severityAtLeast } from "../alerts/dependabot.js";
-import { stillVulnerable } from "../decision/engine.js";
+import { specFloorSafe } from "../util/semver-spec.js";
 import { detectPackageManager } from "../graph/npm.js";
 import type {
   Advisory,
@@ -91,7 +91,7 @@ export function isFindingCovered(finding: AuditFinding, entries: MetadataEntry[]
   );
   if (!active.length) return false;
   const advisory = advisoryForFinding(finding);
-  return active.some((entry) => !stillVulnerable(entry.forcedVersion, [advisory]));
+  return active.some((entry) => specFloorSafe(entry.forcedVersion, [advisory]));
 }
 
 export function uncoveredFindings(

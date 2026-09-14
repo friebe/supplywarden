@@ -168,19 +168,23 @@ withGlobals(
 withGlobals(
   program
     .command("verify")
+    .argument("[package]", "probe only this override; omit to probe all REMOVABLE leftovers")
     .option("--apply", "drop overrides that verify confirmed as removable")
     .option("--skip-install", "probe without running npm/pnpm install")
-    .description("Probe-remove REMOVABLE overrides: install + audit, then restore or --apply"),
-).action(async (opts: { apply?: boolean; skipInstall?: boolean }, cmd: Command) => {
-  emit(
-    await runVerify({
-      cwd: cwdOf(cmd),
-      apply: opts.apply,
-      skipInstall: opts.skipInstall,
-    }),
-    cmd,
-  );
-});
+    .description("Drop one override (or all REMOVABLE), install + audit, then restore or --apply"),
+).action(
+  async (pkg: string | undefined, opts: { apply?: boolean; skipInstall?: boolean }, cmd: Command) => {
+    emit(
+      await runVerify({
+        cwd: cwdOf(cmd),
+        package: pkg,
+        apply: opts.apply,
+        skipInstall: opts.skipInstall,
+      }),
+      cmd,
+    );
+  },
+);
 
 withGlobals(program.command("sync").description("Rewrite package.json overrides from metadata")).action(
   (_opts, cmd: Command) => {

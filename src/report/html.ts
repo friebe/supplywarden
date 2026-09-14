@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ReportModel } from "../types.js";
+import { withReportCommands } from "./commands.js";
 
 function templatePath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -15,7 +16,11 @@ export function renderHtml(report: ReportModel): string {
   } catch {
     template = FALLBACK_HTML;
   }
-  const json = JSON.stringify(report).replace(/</g, "\\u003c");
+  const normalized: ReportModel = {
+    ...report,
+    entries: report.entries.map(withReportCommands),
+  };
+  const json = JSON.stringify(normalized).replace(/</g, "\\u003c");
   return template.replace("<!--SUPPLYWARDEN_DATA-->", json);
 }
 
@@ -77,6 +82,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
     const REASON = {
       'not-in-tree': 'No longer in the lockfile',
       'no-vulnerable-version': 'No vulnerable version left in the tree',
+      'already-at-patched': 'package.json already depends on the patched version — override is leftover',
       'root-upgrade-candidate': 'Only the forced version is in the tree — consider a root upgrade',
       'audit-clear': 'Live audit no longer lists this package'
     };
@@ -85,6 +91,38 @@ const FALLBACK_HTML = `<!DOCTYPE html>
     }
     function formatAction(s) {
       return esc(s).replace(/\x60([^\x60]+)\x60/g, '<code>$1</code>');
+    }
+    function nextCommands(e) {
+      if (e.commands && e.commands.length) return e.commands;
+      const pkg = (e.entry && e.entry.package) || '';
+      const st = e.statuses && e.statuses.length ? e.statuses : [e.status];
+      if (st.includes('NEW')) return ['supplywarden fix --apply'];
+      if (st.includes('UNTRACKED')) {
+        const cmds = ['supplywarden init'];
+        if (st.includes('REMOVABLE') || st.includes('RESOLVED')) cmds.push('supplywarden verify ' + pkg + ' --apply');
+        return cmds;
+      }
+      if (st.includes('DRIFT')) return ['supplywarden sync'];
+      if (st.includes('VERIFY_FAILED') || st.includes('PENDING_VERIFY')) return ['supplywarden verify ' + pkg];
+      if (st.includes('REMOVABLE') || st.includes('RESOLVED') || e.verifyOutcome === 'CONFIRMED_REMOVABLE') {
+        return ['supplywarden verify ' + pkg + ' --apply'];
+      }
+      return pkg ? ['supplywarden why ' + pkg] : [];
+    }
+    function rewriteLegacy(s, pkg) {
+      return String(s || '')
+        .replaceAll('supplywarden check --apply', 'supplywarden verify ' + pkg + ' --apply')
+        .replaceAll('supplywarden verify --apply', 'supplywarden verify ' + pkg + ' --apply')
+        .replace(/supplywarden analyze(?: --audit)?/g, 'supplywarden fix --apply')
+        .replace(/supplywarden fix \\S+ --apply --yes/g, 'supplywarden fix --apply')
+        .replace(/ --yes\\b/g, '')
+        .replace(/supplywarden verify(?! \\S)/g, 'supplywarden verify ' + pkg);
+    }
+    function actionCell(e) {
+      const pkg = (e.entry && e.entry.package) || '';
+      const cmds = nextCommands(e).map((c) => '<code>' + esc(c) + '</code>').join(' ');
+      const note = rewriteLegacy(e.suggestedAction || '', pkg);
+      return cmds + (note ? '<div class="detail">' + formatAction(note) + '</div>' : '');
     }
     const report = JSON.parse(document.getElementById('supplywarden-data').textContent || '{}');
     document.getElementById('title').textContent = report.title || 'supplywarden report';
@@ -124,7 +162,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
         const ghsa = (e.entry.advisories || []).map((a) => a.ghsaId).filter(Boolean).join(', ') || '—';
         html += '<tr><td><strong>' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</strong></td>' +
           '<td>' + esc(REASON[e.removableReason] || '—') + '</td>' +
-          '<td>' + formatAction(e.suggestedAction || '') + '</td>' +
+          '<td>' + actionCell(e) + '</td>' +
           '<td>' + esc(ghsa) + '</td></tr>';
       }
       html += '</tbody></table>';
@@ -152,7 +190,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
         const outcome = e.verifyOutcome ? ' <span class="badge ' + esc(e.verifyOutcome) + '">' + esc(e.verifyOutcome) + '</span>' : '';
         tr.innerHTML = '<td><strong>' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</strong><div class="detail">' + esc(e.entry.reason || '') + '</div>' + graphBlock(e) + '</td>' +
           '<td><span class="badge ' + esc(e.status) + '">' + esc(st) + '</span>' + outcome + '</td>' +
-          '<td>' + formatAction(e.suggestedAction || '') + '</td>' +
+          '<td>' + actionCell(e) + '</td>' +
           '<td>' + esc(e.entry.reviewBy || '') + '</td>';
         tbody.appendChild(tr);
       }

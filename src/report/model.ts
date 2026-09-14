@@ -1,5 +1,6 @@
 import type { CheckEntry, ReportModel } from "../types.js";
 import { removableReasonLabel, sortCheckEntries } from "../check/classify.js";
+import { nextCommands, withReportCommands } from "./commands.js";
 import { nowIso } from "../util/time.js";
 
 export function emptyReport(cwd: string, title: string): ReportModel {
@@ -60,7 +61,7 @@ export function toMarkdown(report: ReportModel): string {
     );
   }
 
-  const entries = sortCheckEntries(report.entries);
+  const entries = sortCheckEntries(report.entries).map(withReportCommands);
   const removable = entries.filter(canRemove);
   if (removable.length) {
     lines.push("## Safe to remove", "");
@@ -80,8 +81,9 @@ export function toMarkdown(report: ReportModel): string {
     lines.push("| Package | Status | Recommendation |", "|---------|--------|----------------|");
     for (const e of entries) {
       const verify = e.verifyOutcome ? ` (${e.verifyOutcome})` : "";
+      const cmd = (e.commands ?? nextCommands(e)).map((c) => `\`${c}\``).join(" · ");
       lines.push(
-        `| ${e.entry.package}@${e.entry.forcedVersion} | ${e.statuses.join(" + ")}${verify} | ${e.suggestedAction} |`,
+        `| ${e.entry.package}@${e.entry.forcedVersion} | ${e.statuses.join(" + ")}${verify} | ${cmd || e.suggestedAction} |`,
       );
     }
     lines.push("");

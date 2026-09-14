@@ -1,3 +1,4 @@
+import { specFloorSafe, versionSatisfiesSpec } from "../util/semver-spec.js";
 import { stillVulnerable } from "../decision/engine.js";
 import type {
   Advisory,
@@ -29,7 +30,7 @@ export async function runPreApplyGate(opts: {
     });
   }
 
-  if (opts.forcedVersion && stillVulnerable(opts.forcedVersion, opts.advisories)) {
+  if (opts.forcedVersion && !specFloorSafe(opts.forcedVersion, opts.advisories)) {
     issues.push({
       code: "STILL_VULNERABLE",
       message: `${opts.pkg}@${opts.forcedVersion} still matches a vulnerable range`,
@@ -38,7 +39,10 @@ export async function runPreApplyGate(opts: {
     });
   }
 
-  if (opts.graph.versions.includes(opts.forcedVersion) && opts.graph.versions.length === 1) {
+  if (
+    opts.graph.versions.length === 1 &&
+    versionSatisfiesSpec(opts.graph.versions[0]!, opts.forcedVersion)
+  ) {
     issues.push({
       code: "NOOP_OVERRIDE",
       message: `Lockfile already resolved ${opts.pkg}@${opts.forcedVersion}; override would not change the graph`,

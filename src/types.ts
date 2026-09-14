@@ -12,6 +12,7 @@ export type EntryStatus =
 export type RemovableReason =
   | "not-in-tree"
   | "no-vulnerable-version"
+  | "already-at-patched"
   | "root-upgrade-candidate"
   | "audit-clear";
 
@@ -156,6 +157,8 @@ export type CheckEntry = {
   status: CheckStatus;
   statuses: CheckStatus[];
   suggestedAction: string;
+  /** Canonical CLI to copy from the HTML report (derived from status, not prose). */
+  commands?: string[];
   issues: ValidationIssue[];
   removableReason?: RemovableReason;
   roots?: string[];

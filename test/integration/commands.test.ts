@@ -53,7 +53,7 @@ describe("runCheck", () => {
     const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.entry.package, e]));
     expect(byPkg.qs?.status).toBe("OVERDUE");
     expect(byPkg.lodash?.statuses).toContain("REMOVABLE");
-    expect(byPkg.lodash?.removableReason).toBe("no-vulnerable-version");
+    expect(byPkg.lodash?.removableReason).toBe("already-at-patched");
     expect(byPkg.request?.statuses).toContain("REMOVABLE");
     expect(byPkg.request?.removableReason).toBe("not-in-tree");
     expect(byPkg.minimist?.status).toBe("DRIFT");
@@ -61,12 +61,12 @@ describe("runCheck", () => {
     expect(byPkg.tar?.status).toBe("VERIFY_FAILED");
     expect(byPkg.ws?.status).toBe("UNTRACKED");
     expect(byPkg.qs?.suggestedAction).toMatch(/supplywarden why qs/);
-    expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden verify --apply/);
-    expect(byPkg.request?.suggestedAction).toMatch(/supplywarden verify --apply/);
+    expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden verify lodash --apply/);
+    expect(byPkg.request?.suggestedAction).toMatch(/supplywarden verify request --apply/);
     expect(byPkg.minimist?.suggestedAction).toMatch(/supplywarden sync/);
-    expect(byPkg.semver?.suggestedAction).toMatch(/supplywarden verify/);
+    expect(byPkg.semver?.suggestedAction).toMatch(/supplywarden verify semver/);
     expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden why tar/);
-    expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden verify/);
+    expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden verify tar/);
     expect(byPkg.ws?.suggestedAction).toMatch(/supplywarden init/);
   });
 
@@ -204,6 +204,17 @@ describe("runWhy / analyze", () => {
     expect(result.exitCode).toBe(1);
     expect(result.messages.join("\n")).toMatch(/skip-audit|alert file/i);
   });
+
+  it("tells you to verify --apply when audit is clear but check has REMOVABLE", async () => {
+    const result = await runFix({
+      cwd: fixtureDir("npm-mixed"),
+      apply: true,
+      audit: createStaticAudit([]),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.messages.join("\n")).toMatch(/verify --apply/);
+    expect(result.messages.join("\n")).toMatch(/lodash|request/);
+  });
 });
 
 describe("validation gates", () => {
@@ -299,8 +310,27 @@ describe("doctor / html / sync", () => {
     expect(html).toContain("supplywarden-data");
     expect(html).toContain("qs");
     expect(html).toMatch(/Safe to remove|no-vulnerable-version/);
-    expect(html).toMatch(/supplywarden verify --apply/);
+    expect(html).toMatch(/supplywarden verify qs --apply/);
     expect(JSON.stringify(result.report.entries[0])).toMatch(/roots|express/);
+  });
+
+  it("HTML actions use verify <pkg>, not check --apply", async () => {
+    const result = await runCheck({ cwd: fixtureDir("npm-mixed"), enableAudit: false });
+    const html = renderHtml(result.report);
+    const json = html.match(/id="supplywarden-data">([^<]*)/)?.[1];
+    expect(json).toBeTruthy();
+    const data = JSON.parse(json!);
+    const actions = data.entries.map((e: { commands?: string[]; suggestedAction: string }) =>
+      [...(e.commands ?? []), e.suggestedAction].join(" "),
+    );
+    expect(actions.join("\n")).not.toMatch(/check --apply/);
+    expect(actions.some((a: string) => a.includes("supplywarden verify lodash --apply"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden verify request --apply"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden verify semver"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden verify tar"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden why qs"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden sync"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden init"))).toBe(true);
   });
 
   it("sync restores drifted overrides", async () => {
@@ -373,6 +403,26 @@ describe("runVerify", () => {
     });
   });
 
+  it("drops leftover REMOVABLE from check without requiring npm install", async () => {
+    await withFixture("npm-mixed", async (dir) => {
+      const result = await runVerify({
+        cwd: dir,
+        apply: true,
+        audit: createStaticAudit([]),
+        install: createStaticInstall(
+          false,
+          "npm error code EOVERRIDE\nnpm error Override for semver@7.5.1 conflicts with direct dependency",
+        ),
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.messages.join("\n")).toMatch(/CONFIRMED_REMOVABLE/);
+      const pkg = readPackageJson(dir);
+      expect(pkg.overrides?.lodash).toBeUndefined();
+      expect(pkg.overrides?.request).toBeUndefined();
+      expect(pkg.overrides?.qs).toBe("6.11.2");
+    });
+  });
+
   it("keeps override when install fails", async () => {
     await withFixture("npm-removable", async (dir) => {
       const result = await runVerify({
@@ -384,6 +434,57 @@ describe("runVerify", () => {
       expect(result.report.entries[0]!.verifyOutcome).toBe("VERIFY_FAILED");
       const pkg = readPackageJson(dir);
       expect(pkg.overrides).toMatchObject({ qs: "6.11.2" });
+    });
+  });
+
+  it("probes only the named package", async () => {
+    await withFixture("npm-mixed", async (dir) => {
+      const result = await runVerify({
+        cwd: dir,
+        package: "lodash",
+        apply: true,
+        skipInstall: true,
+        audit: createStaticAudit([]),
+        install: createStaticInstall(),
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.report.entries).toHaveLength(1);
+      expect(result.report.entries[0]!.entry.package).toBe("lodash");
+      expect(result.report.entries[0]!.verifyOutcome).toBe("CONFIRMED_REMOVABLE");
+      const pkg = readPackageJson(dir);
+      expect(pkg.overrides?.lodash).toBeUndefined();
+      expect(pkg.overrides?.request).toBe("2.88.2");
+    });
+  });
+
+  it("probes a named override even when check has not marked it REMOVABLE", async () => {
+    await withFixture("npm-mixed", async (dir) => {
+      const result = await runVerify({
+        cwd: dir,
+        package: "qs",
+        skipInstall: true,
+        audit: createStaticAudit([]),
+        install: createStaticInstall(),
+      });
+      expect(result.report.entries).toHaveLength(1);
+      expect(result.report.entries[0]!.entry.package).toBe("qs");
+      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
+      const pkg = readPackageJson(dir);
+      expect(pkg.overrides?.qs).toBe("6.11.2");
+    });
+  });
+
+  it("exits 1 when the named package has no override", async () => {
+    await withFixture("npm-mixed", async (dir) => {
+      const result = await runVerify({
+        cwd: dir,
+        package: "left-pad",
+        skipInstall: true,
+        audit: createStaticAudit([]),
+        install: createStaticInstall(),
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.messages.join("\n")).toMatch(/no override for left-pad/);
     });
   });
 });

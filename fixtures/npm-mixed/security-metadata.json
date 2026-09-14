@@ -42,7 +42,7 @@
           "patchedVersion": "4.17.21"
         }
       ],
-      "reason": "Lockfile already on patched lodash@4.17.21",
+      "reason": "Leftover: package.json already depends on lodash@4.17.21 (min patched); override duplicates it",
       "strategy": "override",
       "rootPackages": ["lodash"],
       "dependencyChains": ["lodash@4.17.21"],

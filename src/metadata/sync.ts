@@ -131,4 +131,28 @@ export function syncOverridesToPackageJson(
   return { path, overrides };
 }
 
+export function deleteOverrideFromManifest(
+  cwd: string,
+  packageName: string,
+  manifestPath = "package.json",
+): void {
+  const pkg = readPackageJson(cwd, manifestPath);
+  const bags: Array<Record<string, unknown> | undefined> = [
+    pkg.overrides,
+    pkg.pnpm?.overrides as Record<string, unknown> | undefined,
+    pkg.resolutions as Record<string, unknown> | undefined,
+  ];
+  for (const bag of bags) {
+    if (!bag || !(packageName in bag)) continue;
+    delete bag[packageName];
+  }
+  if (pkg.overrides && Object.keys(pkg.overrides).length === 0) delete pkg.overrides;
+  if (pkg.pnpm?.overrides && Object.keys(pkg.pnpm.overrides).length === 0) {
+    delete pkg.pnpm.overrides;
+    if (Object.keys(pkg.pnpm).length === 0) delete pkg.pnpm;
+  }
+  if (pkg.resolutions && Object.keys(pkg.resolutions).length === 0) delete pkg.resolutions;
+  writePackageJson(cwd, pkg, manifestPath);
+}
+
 export { overrideValue };
