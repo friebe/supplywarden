@@ -38,6 +38,8 @@ npx supplywarden sync                 # metadata → package.json if someone edi
 |---------------|--------------|--------------|
 | **NEW** | `fix --apply` | Writes the recommended upgrade or override. |
 | **REMOVABLE** / leftover | `verify <pkg> --apply` | Removes that override from `package.json` (after probe). |
+| **PENDING_VERIFY** | `npm install` then `check` | Override is already in `package.json`; lockfile has not picked it up yet. Not `verify` — that would drop it. |
+| **VERIFY_FAILED** | `why <pkg>` | Last `fix --apply` install/audit did not stick. |
 | OVERDUE / DRIFT / UNTRACKED | `why` / `sync` / `init` | Not `fix`. |
 | nothing to write | — | `fix --apply` will say there are no new findings (and point you at `verify --apply` if something is REMOVABLE). |
 

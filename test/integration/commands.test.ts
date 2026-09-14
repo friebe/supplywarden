@@ -64,9 +64,9 @@ describe("runCheck", () => {
     expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden verify lodash --apply/);
     expect(byPkg.request?.suggestedAction).toMatch(/supplywarden verify request --apply/);
     expect(byPkg.minimist?.suggestedAction).toMatch(/supplywarden sync/);
-    expect(byPkg.semver?.suggestedAction).toMatch(/supplywarden verify semver/);
+    expect(byPkg.semver?.suggestedAction).toMatch(/npm install/);
     expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden why tar/);
-    expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden verify tar/);
+    expect(byPkg.tar?.suggestedAction).not.toMatch(/supplywarden verify/);
     expect(byPkg.ws?.suggestedAction).toMatch(/supplywarden init/);
   });
 
@@ -326,8 +326,8 @@ describe("doctor / html / sync", () => {
     expect(actions.join("\n")).not.toMatch(/check --apply/);
     expect(actions.some((a: string) => a.includes("supplywarden verify lodash --apply"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden verify request --apply"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("supplywarden verify semver"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("supplywarden verify tar"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("npm install"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden why tar"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden why qs"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden sync"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden init"))).toBe(true);

@@ -103,7 +103,8 @@ const FALLBACK_HTML = `<!DOCTYPE html>
         return cmds;
       }
       if (st.includes('DRIFT')) return ['supplywarden sync'];
-      if (st.includes('VERIFY_FAILED') || st.includes('PENDING_VERIFY')) return ['supplywarden verify ' + pkg];
+      if (st.includes('PENDING_VERIFY')) return ['npm install'];
+      if (st.includes('VERIFY_FAILED')) return ['supplywarden why ' + pkg];
       if (st.includes('REMOVABLE') || st.includes('RESOLVED') || e.verifyOutcome === 'CONFIRMED_REMOVABLE') {
         return ['supplywarden verify ' + pkg + ' --apply'];
       }

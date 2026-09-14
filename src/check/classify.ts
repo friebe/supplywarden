@@ -238,9 +238,9 @@ function suggest(
     case "DRIFT":
       return "package.json drifted — run `supplywarden sync`";
     case "VERIFY_FAILED":
-      return `Last apply failed — run \`supplywarden why ${pkg}\` then \`supplywarden verify ${pkg}\``;
+      return `Last apply did not land in the lockfile — inspect with \`supplywarden why ${pkg}\`, then npm install`;
     case "PENDING_VERIFY":
-      return `Pending verify — run \`supplywarden verify ${pkg}\``;
+      return `Override is in package.json but the lockfile is still old — run npm install, then \`supplywarden check\``;
     case "NEW":
       return `Untracked audit finding — run \`supplywarden why ${pkg}\` then \`supplywarden fix --apply\``;
     case "UNTRACKED":
