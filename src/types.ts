@@ -200,6 +200,8 @@ export type RegistryClient = {
     pkg: string,
     version: string,
   ) => Promise<{ exists: boolean; deprecated?: string | null }>;
+  /** Latest published version, or undefined if lookup failed. */
+  latestVersion?: (pkg: string) => Promise<string | undefined>;
   getLatestMatching?: (
     pkg: string,
     range: string,

@@ -119,8 +119,12 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   };
 
   if (decision.strategy === "upgrade" && decision.upgradeTargets?.length) {
-    bumpRootPackages(cwd, decision.upgradeTargets.map((t) => t.name), group.manifestPath);
-    messages.push(`Root packages bumped: ${decision.upgradeTargets.map((t) => t.name).join(", ")}`);
+    bumpRootPackages(cwd, decision.upgradeTargets, group.manifestPath);
+    messages.push(
+      `Root packages bumped: ${decision.upgradeTargets
+        .map((t) => (t.to ? `${t.name}@${t.from ?? "?"} → ${t.to}` : t.name))
+        .join(", ")}`,
+    );
   }
 
   const { metadata: next } = dedupeOrSupersede(metadata, entry);
@@ -133,12 +137,13 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     const installed = await opts.install.install(cwd);
     if (!installed.ok) {
       restoreFiles(cwd, snap);
+      persistApplyVerifyFailed(cwd, config, entry, decision.strategy, group.manifestPath, installed.error ?? "install failed");
       messages.push(installed.error ?? "npm install failed");
-      entry.status = "verify_failed";
       return {
         exitCode: 1,
         report: { ...report, title: "VERIFY_FAILED peer conflict" },
         messages,
+        writtenFiles: [config.metadataPath, "package.json"],
       };
     }
   }
@@ -154,11 +159,20 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
 
   if (postBlocked.length && !opts.skipInstall) {
     restoreFiles(cwd, snap);
+    persistApplyVerifyFailed(
+      cwd,
+      config,
+      entry,
+      decision.strategy,
+      group.manifestPath,
+      postBlocked.map((i) => i.message).join("; "),
+    );
     messages.push(...postBlocked.map((i) => i.message));
     return {
       exitCode: 1,
       report: { ...report, title: "VERIFY_FAILED", validation: [...issues, ...post] },
       messages,
+      writtenFiles: [config.metadataPath, "package.json"],
     };
   }
 
@@ -176,15 +190,46 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   };
 }
 
-function bumpRootPackages(cwd: string, names: string[], manifestPath: string): void {
+function persistApplyVerifyFailed(
+  cwd: string,
+  config: SupplywardenConfig,
+  entry: MetadataEntry,
+  strategy: Decision["strategy"],
+  manifestPath: string,
+  error: string,
+): void {
+  entry.status = "verify_failed";
+  entry.resolvedAt = nowIso();
+  entry.resolvedBy = actorName();
+  entry.resolution = `verify-failed: ${error}`;
+  const meta = readMetadata(cwd, config);
+  const { metadata: next } = dedupeOrSupersede(meta, entry);
+  writeMetadata(cwd, config, next);
+  if (strategy === "override") {
+    syncOverridesToPackageJson(cwd, next, manifestPath);
+  }
+}
+
+function bumpRootPackages(
+  cwd: string,
+  targets: Array<{ name: string; from?: string; to?: string }>,
+  manifestPath: string,
+): void {
   const pkg = readPackageJson(cwd, manifestPath);
-  const deps = (pkg.dependencies ?? {}) as Record<string, string>;
-  for (const name of names) {
-    if (deps[name] && !deps[name].startsWith("^") && !deps[name].startsWith("~")) {
-      deps[name] = `^${deps[name]}`;
+  const bags = [
+    pkg.dependencies as Record<string, string> | undefined,
+    pkg.devDependencies as Record<string, string> | undefined,
+    pkg.optionalDependencies as Record<string, string> | undefined,
+  ];
+  for (const t of targets) {
+    if (!t.to) continue;
+    for (const bag of bags) {
+      if (!bag || !(t.name in bag)) continue;
+      const current = bag[t.name] ?? "";
+      const prefix = current.startsWith("~") ? "~" : "^";
+      bag[t.name] = `${prefix}${t.to}`;
     }
   }
-  pkg.dependencies = deps;
   writePackageJson(cwd, pkg, manifestPath);
 }
 

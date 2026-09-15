@@ -119,6 +119,37 @@ describe("runCheck", () => {
     expect(qs?.decision?.strategy).toMatch(/upgrade|override/);
   });
 
+  it("suggests a newer root version, not the one already installed", async () => {
+    const result = await runCheck({
+      cwd: fixtureDir("npm-simple"),
+      enableAudit: true,
+      audit: createStaticAudit([
+        {
+          package: "qs",
+          severity: "high",
+          range: "< 6.11.0",
+          ghsaId: "GHSA-qs-high",
+          patchedVersion: "6.11.2",
+        },
+      ]),
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+        async latestVersion() {
+          return "4.21.2";
+        },
+        async getLatestMatching() {
+          return "4.21.2";
+        },
+      },
+    });
+    const qs = result.report.entries.find((e) => e.status === "NEW" && e.entry.package === "qs");
+    expect(qs?.decision?.strategy).toBe("upgrade");
+    expect(qs?.suggestedAction).toMatch(/express@4\.18\.2 → 4\.21\.2/);
+    expect(qs?.suggestedAction).not.toMatch(/UPGRADE express@4\.18\.2 —/);
+  });
+
   it("does not flag audit findings covered by an active override", async () => {
     const result = await runCheck({
       cwd: fixtureDir("npm-removable"),
@@ -454,6 +485,11 @@ describe("runVerify", () => {
       expect(result.report.entries[0]!.verifyOutcome).toBe("VERIFY_FAILED");
       const pkg = readPackageJson(dir);
       expect(pkg.overrides).toMatchObject({ qs: "6.11.2" });
+      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
+      expect(meta.entries[0].status).toBe("verify_failed");
+      expect(meta.entries[0].resolvedAt).toBeTruthy();
+      expect(meta.entries[0].resolution).toMatch(/verify-failed/);
+      expect(meta.entries[0].resolution).toMatch(/peer conflict/);
     });
   });
 

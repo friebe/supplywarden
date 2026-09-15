@@ -1,4 +1,4 @@
-import { satisfies, valid, gt } from "semver";
+import { major, satisfies, valid, gt } from "semver";
 import type { Advisory, Decision, GraphAnalysis, OverrideScope, SupplywardenConfig } from "../types.js";
 import { inferSafeFloorFromVulnerableRange } from "../util/vuln-range.js";
 
@@ -46,6 +46,65 @@ export function decide(opts: {
     forcedVersion,
     scope,
   };
+}
+
+/** Newer than `from`. Prefers the same major, then overall latest. */
+export function upgradeTargetTo(
+  from: string | undefined,
+  latestSameMajor: string | undefined,
+  latestOverall?: string | undefined,
+): string | undefined {
+  const pick = (candidate: string | undefined): string | undefined => {
+    if (!candidate || !valid(candidate)) return undefined;
+    if (!from || !valid(from)) return candidate;
+    return gt(candidate, from) ? candidate : undefined;
+  };
+  return pick(latestSameMajor) ?? pick(latestOverall);
+}
+
+export function formatUpgradeTarget(t: { name: string; from?: string; to?: string }): string {
+  if (t.to && t.from && t.to !== t.from) return `${t.name}@${t.from} → ${t.to}`;
+  if (t.to) return `${t.name} → ${t.to}`;
+  if (t.from) return `${t.name} (installed ${t.from}; need a newer release)`;
+  return t.name;
+}
+
+export async function resolveUpgradeDecision(
+  decision: Decision,
+  lookup: {
+    latestVersion?: (pkg: string) => Promise<string | undefined>;
+    getLatestMatching?: (pkg: string, range: string) => Promise<string | undefined>;
+  } = {},
+): Promise<Decision> {
+  if (decision.strategy !== "upgrade" || !decision.upgradeTargets?.length) return decision;
+  if (!lookup.latestVersion && !lookup.getLatestMatching) return decision;
+
+  let knownAll = true;
+  const targets = [];
+  for (const t of decision.upgradeTargets) {
+    const from = t.from && valid(t.from) ? t.from : undefined;
+    const sameMajorRange =
+      from !== undefined ? `>${from} <${major(from) + 1}.0.0` : undefined;
+    const latestSameMajor = sameMajorRange
+      ? await lookup.getLatestMatching?.(t.name, sameMajorRange)
+      : undefined;
+    const latestOverall =
+      (await lookup.latestVersion?.(t.name)) ?? (await lookup.getLatestMatching?.(t.name, "*"));
+    if (latestOverall === undefined && latestSameMajor === undefined) knownAll = false;
+    targets.push({ ...t, to: upgradeTargetTo(from, latestSameMajor, latestOverall) });
+  }
+
+  if (targets.every((t) => !t.to) && knownAll && decision.forcedVersion) {
+    const installed = targets.map((t) => `${t.name}@${t.from ?? "?"}`).join(", ");
+    return {
+      strategy: "override",
+      reason: `${installed} already at latest published version; root upgrade cannot go higher — override ${decision.forcedVersion}`,
+      forcedVersion: decision.forcedVersion,
+      scope: decision.scope,
+    };
+  }
+
+  return { ...decision, upgradeTargets: targets };
 }
 
 function parentFromChain(path: string[], pkg: string): string | undefined {

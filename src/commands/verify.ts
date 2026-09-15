@@ -1,6 +1,5 @@
 import { analyzeNpmGraph } from "../graph/npm.js";
 import { firstSafeForcedVersion, stillVulnerable } from "../decision/engine.js";
-import { loadConfig } from "../config.js";
 import { listOverridesToProbe } from "./check.js";
 import { specFloorSafe } from "../util/semver-spec.js";
 import { readMetadata, writeMetadata } from "../metadata/store.js";
@@ -9,13 +8,60 @@ import { createLiveAudit, filterFindings } from "../audit/client.js";
 import { createLiveInstall } from "../install/client.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { nowIso } from "../util/time.js";
-import type { AuditClient, CheckEntry, CommandResult, InstallClient } from "../types.js";
+import { actorName, loadConfig } from "../config.js";
+import type { AuditClient, CheckEntry, CommandResult, InstallClient, SupplywardenConfig } from "../types.js";
 
 function leftoverHeuristic(entry: CheckEntry): boolean {
   return (
     entry.removableReason === "not-in-tree" ||
     entry.removableReason === "already-at-patched"
   );
+}
+
+function persistVerifyFailed(
+  cwd: string,
+  config: SupplywardenConfig,
+  candidate: CheckEntry,
+  error: string,
+): boolean {
+  const meta = readMetadata(cwd, config);
+  const entry =
+    meta.entries.find((e) => e.id === candidate.entry.id) ??
+    meta.entries.find(
+      (e) =>
+        e.package === candidate.entry.package &&
+        e.status !== "resolved" &&
+        e.status !== "superseded",
+    );
+  if (!entry) return false;
+  entry.status = "verify_failed";
+  entry.resolvedAt = nowIso();
+  entry.resolvedBy = actorName();
+  entry.resolution = `verify-failed: ${error}`;
+  writeMetadata(cwd, config, meta);
+  return true;
+}
+
+function persistKeepClearsFailure(
+  cwd: string,
+  config: SupplywardenConfig,
+  candidate: CheckEntry,
+  why: string,
+): void {
+  const meta = readMetadata(cwd, config);
+  const entry =
+    meta.entries.find((e) => e.id === candidate.entry.id) ??
+    meta.entries.find(
+      (e) =>
+        e.package === candidate.entry.package &&
+        e.status === "verify_failed",
+    );
+  if (!entry || entry.status !== "verify_failed") return;
+  entry.status = "active";
+  entry.resolvedAt = nowIso();
+  entry.resolvedBy = actorName();
+  entry.resolution = `verify-keep: ${why}`;
+  writeMetadata(cwd, config, meta);
 }
 
 function overrideConflictPackage(error: string): string | undefined {
@@ -64,6 +110,7 @@ export async function runVerify(opts: {
   const install = opts.install ?? createLiveInstall();
   const files = [...PROJECT_SNAPSHOT_FILES, config.metadataPath];
   const snap = snapshotFiles(cwd, files);
+  let written: string[] = [];
   const probed: CheckEntry[] = [];
   const messages: string[] = [
     pkg
@@ -71,6 +118,8 @@ export async function runVerify(opts: {
       : `supplywarden verify – ${candidates.length} candidate(s)`,
   ];
   let needResync = false;
+  const failures: Array<{ candidate: CheckEntry; error: string }> = [];
+  const keeps: Array<{ candidate: CheckEntry; why: string }> = [];
 
   for (const candidate of candidates) {
     restoreFiles(cwd, snap);
@@ -94,8 +143,11 @@ export async function runVerify(opts: {
         const unrelated = Boolean(conflictPkg && conflictPkg !== candidate.entry.package);
         restoreFiles(cwd, snap);
         if (!unrelated) {
+          failures.push({ candidate, error: installed.error ?? "install failed" });
           probed.push({
             ...candidate,
+            status: "VERIFY_FAILED",
+            statuses: ["VERIFY_FAILED"],
             verifyOutcome: "VERIFY_FAILED",
             suggestedAction: `Install failed — keep override (${installed.error ?? "install failed"}); retry with \`supplywarden verify ${candidate.entry.package}\``,
           });
@@ -155,6 +207,7 @@ export async function runVerify(opts: {
           ? `${candidate.entry.package}: KEEP (weak override ${candidate.entry.forcedVersion}; run fix --apply)`
           : `${candidate.entry.package}: KEEP (${why})`,
       );
+      keeps.push({ candidate, why });
     } else {
       probed.push({
         ...candidate,
@@ -173,7 +226,14 @@ export async function runVerify(opts: {
     await install.install(cwd);
   }
 
-  let written: string[] = [];
+  for (const item of failures) {
+    if (persistVerifyFailed(cwd, config, item.candidate, item.error)) {
+      written = [config.metadataPath];
+    }
+  }
+  for (const item of keeps) {
+    persistKeepClearsFailure(cwd, config, item.candidate, item.why);
+  }
   const confirmed = probed.filter((p) => p.verifyOutcome === "CONFIRMED_REMOVABLE");
   if (opts.apply && confirmed.length) {
     const next = readMetadata(cwd, config);

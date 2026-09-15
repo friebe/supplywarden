@@ -4,7 +4,7 @@ import {
   groupAlerts,
   loadAlertFile,
 } from "../alerts/dependabot.js";
-import { decide } from "../decision/engine.js";
+import { decide, resolveUpgradeDecision } from "../decision/engine.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
 import { applyFix } from "../fix/apply.js";
 import { createLiveRegistry } from "../registry/verify.js";
@@ -75,8 +75,14 @@ export async function runFix(opts: {
   for (const group of groups) {
     const graph = analyzeNpmGraph(cwd, group.package);
     group.installedVersion = graph.versions[0];
-    const decision = decide({ graph, advisories: group.advisories, config });
-    const registry = opts.registry ?? (opts.apply ? createLiveRegistry() : undefined);
+    const registry = opts.registry ?? createLiveRegistry();
+    const decision = await resolveUpgradeDecision(
+      decide({ graph, advisories: group.advisories, config }),
+      {
+        latestVersion: registry.latestVersion?.bind(registry),
+        getLatestMatching: registry.getLatestMatching?.bind(registry),
+      },
+    );
     const result = await applyFix({
       cwd,
       config,

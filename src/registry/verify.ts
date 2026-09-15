@@ -1,4 +1,5 @@
 import { execPmSync } from "../util/pm-exec.js";
+import { maxSatisfying, valid } from "semver";
 
 export type NpmPackument = {
   "dist-tags"?: { latest?: string };
@@ -17,6 +18,23 @@ export async function fetchPackument(pkg: string): Promise<NpmPackument | null> 
   }
 }
 
+function publishedVersions(packument: NpmPackument): string[] {
+  return Object.entries(packument.versions ?? {})
+    .filter(([, meta]) => !meta?.deprecated)
+    .map(([version]) => version)
+    .filter((version) => Boolean(valid(version)));
+}
+
+export function latestFromPackument(packument: NpmPackument): string | undefined {
+  const tag = packument["dist-tags"]?.latest;
+  if (tag && valid(tag) && !packument.versions?.[tag]?.deprecated) return tag;
+  return maxSatisfying(publishedVersions(packument), "*") ?? undefined;
+}
+
+export function matchingFromPackument(packument: NpmPackument, range: string): string | undefined {
+  return maxSatisfying(publishedVersions(packument), range) ?? undefined;
+}
+
 export function createLiveRegistry() {
   return {
     async verifyPackageVersion(pkg: string, version: string) {
@@ -25,6 +43,16 @@ export function createLiveRegistry() {
       const meta = packument.versions[version];
       if (!meta) return { exists: false, deprecated: null };
       return { exists: true, deprecated: meta.deprecated ?? null };
+    },
+    async latestVersion(pkg: string) {
+      const packument = await fetchPackument(pkg);
+      if (!packument) return undefined;
+      return latestFromPackument(packument);
+    },
+    async getLatestMatching(pkg: string, range: string) {
+      const packument = await fetchPackument(pkg);
+      if (!packument) return undefined;
+      return matchingFromPackument(packument, range);
     },
   };
 }
@@ -35,6 +63,16 @@ export function createOfflineRegistry(known: Record<string, string[]> = {}) {
       const versions = known[pkg];
       if (!versions) return { exists: true, deprecated: null };
       return { exists: versions.includes(version), deprecated: null };
+    },
+    async latestVersion(pkg: string) {
+      const versions = known[pkg];
+      if (!versions) return undefined;
+      return maxSatisfying(versions, "*") ?? undefined;
+    },
+    async getLatestMatching(pkg: string, range: string) {
+      const versions = known[pkg];
+      if (!versions) return undefined;
+      return maxSatisfying(versions, range) ?? undefined;
     },
   };
 }

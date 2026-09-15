@@ -39,7 +39,7 @@ npx supplywarden sync                 # metadata → package.json if someone edi
 | **NEW** | `fix --apply` | Writes the recommended upgrade or override. |
 | **REMOVABLE** / leftover | `verify <pkg> --apply` | Removes that override from `package.json` (after probe). |
 | **PENDING_VERIFY** | `npm install` then `check` | Override is already in `package.json`; lockfile has not picked it up yet. Not `verify` — that would drop it. |
-| **VERIFY_FAILED** | `why <pkg>` | Last `fix --apply` install/audit did not stick. |
+| **VERIFY_FAILED** | `why <pkg>` | Last `verify`/`fix --apply` install/audit did not stick. Status + date are in `security-metadata.json`. |
 | OVERDUE / DRIFT / UNTRACKED | `why` / `sync` / `init` | Not `fix`. |
 | OK, audit clean, parents still declare older specs | `verify <pkg>` | Hint only — live audit after drop decides. Not a forced KEEP. |
 | nothing to write | — | `fix --apply` will say there are no new findings (and point you at `verify --apply` if something is REMOVABLE). |
@@ -68,7 +68,7 @@ File: `.supplywardenrc.json` in the project (example: `.supplywardenrc.example.j
 | Key | Default | Effect |
 |-----|---------|--------|
 | `audit.minSeverity` | `"high"` | After `npm`/`pnpm`/`yarn audit`, drop findings below this label. `critical` > `high` > `medium` > `low`. |
-| `upgradeRootThreshold` | `3` | `check` / `fix`: if this many (or fewer) roots pull the vuln package, prefer **upgrade**; more roots → **override**. A lockfile that only shows the forced version with *more* roots than this is the override holding the tree, not leftover. Parent specs that still name older versions are a **hint** — `verify <pkg>` tests the drop; live audit decides. |
+| `upgradeRootThreshold` | `3` | `check` / `fix`: if this many (or fewer) roots pull the vuln package, prefer **upgrade**; more roots → **override**. Upgrade names a **newer** root version than the one installed (`nx@23.3.0 → 23.4.x`). If the root is already latest, fall back to override. Parent specs that still name older versions are a **hint** — `verify <pkg>` tests the drop; live audit decides. |
 | `defaultReviewDays` | `7` | New overrides get `reviewBy` = now + N days. After that, `--strict` fails on high/critical **OVERDUE**. |
 | `metadataPath` | `"security-metadata.json"` | Where override records live. |
 | `impactWarnThreshold` | `20` | `fix --apply` logs a warning if the estimated lockfile change is this large (does not block). |

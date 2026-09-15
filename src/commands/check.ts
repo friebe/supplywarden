@@ -6,7 +6,7 @@ import {
   reconcileWithAudit,
   sortCheckEntries,
 } from "../check/classify.js";
-import { decide } from "../decision/engine.js";
+import { decide, formatUpgradeTarget, resolveUpgradeDecision } from "../decision/engine.js";
 import { specFloorSafe } from "../util/semver-spec.js";
 import { readMetadata } from "../metadata/store.js";
 import { nowIso } from "../util/time.js";
@@ -18,6 +18,7 @@ import {
 } from "../audit/client.js";
 import { importOverridesFromPackageJson } from "../metadata/import.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
+import { createLiveRegistry } from "../registry/verify.js";
 import type {
   AuditClient,
   CheckEntry,
@@ -25,6 +26,7 @@ import type {
   Decision,
   MetadataEntry,
   PackageAlertGroup,
+  RegistryClient,
   SupplywardenConfig,
 } from "../types.js";
 
@@ -33,6 +35,7 @@ export async function runCheck(opts: {
   strict?: boolean;
   enableAudit?: boolean;
   audit?: AuditClient;
+  registry?: RegistryClient;
 }): Promise<CommandResult> {
   const cwd = opts.cwd;
   const config = loadConfig(cwd);
@@ -59,7 +62,10 @@ export async function runCheck(opts: {
     }
     const uncovered = uncoveredFindings(filtered, metadata.entries);
     newGroups.push(...findingsToGroups(uncovered));
-    classified.push(...newGroups.map((group) => entryFromAuditGroup(cwd, group, config)));
+    const registry = opts.registry ?? (opts.audit ? undefined : createLiveRegistry());
+    classified.push(
+      ...(await Promise.all(newGroups.map((group) => entryFromAuditGroup(cwd, group, config, registry)))),
+    );
   }
 
   const sorted = sortCheckEntries(classified);
@@ -192,7 +198,7 @@ function newFindingAction(
   const sev = group.maxSeverity.toUpperCase();
   if (decision.strategy === "upgrade") {
     const targets = (decision.upgradeTargets ?? [])
-      .map((t) => (t.from ? `${t.name}@${t.from}` : t.name) + (t.to ? ` → ${t.to}` : ""))
+      .map((t) => formatUpgradeTarget(t))
       .join(", ");
     return `New ${sev}: UPGRADE ${targets || roots.join(", ") || group.package} — run \`supplywarden fix --apply\``;
   }
@@ -204,13 +210,17 @@ function newFindingAction(
   return `New ${sev}: OVERRIDE ${group.package}@${ver}${rootPart} — run \`supplywarden fix --apply\``;
 }
 
-function entryFromAuditGroup(
+async function entryFromAuditGroup(
   cwd: string,
   group: PackageAlertGroup,
   config: SupplywardenConfig,
-): CheckEntry {
+  registry?: RegistryClient,
+): Promise<CheckEntry> {
   const graph = analyzeNpmGraph(cwd, group.package);
-  const decision = decide({ graph, advisories: group.advisories, config });
+  const decision = await resolveUpgradeDecision(decide({ graph, advisories: group.advisories, config }), {
+    latestVersion: registry?.latestVersion?.bind(registry),
+    getLatestMatching: registry?.getLatestMatching?.bind(registry),
+  });
   const roots = graph.roots.map((r) => r.name);
   const chains = graph.chains.map((c) => c.path.join(" → "));
   const entry: MetadataEntry = {
