@@ -18,6 +18,7 @@ function ghsaList(entry: CheckEntry): string {
 }
 
 function canRemove(e: CheckEntry): boolean {
+  if (e.verifyOutcome === "KEEP" || e.verifyOutcome === "VERIFY_FAILED") return false;
   return e.statuses.includes("REMOVABLE") || e.statuses.includes("RESOLVED");
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyEntry, classifyUntrackedOverride, reconcileWithAudit, removableReasonLabel, sortCheckEntries } from "../../src/check/classify.js";
+import { classifyEntry, classifyUntrackedOverride, parentRangesAlreadySafe, reconcileWithAudit, removableReasonLabel, sortCheckEntries } from "../../src/check/classify.js";
 import { toMarkdown } from "../../src/report/model.js";
 import { fixtureDir } from "../helpers/fixture-project.js";
 import type { CheckEntry, MetadataEntry } from "../../src/types.js";
@@ -167,6 +167,39 @@ describe("reconcileWithAudit", () => {
     );
     expect(next[0]!.removableReason).toBe("no-vulnerable-version");
   });
+
+  it("does not treat a patched lockfile as leftover when parent ranges still allow the vuln", () => {
+    const next = reconcileWithAudit(
+      [
+        {
+          ...base,
+          entry: {
+            ...base.entry,
+            package: "picomatch",
+            forcedVersion: "^4.0.4",
+            advisories: [{ severity: "high", vulnerableRange: "< 4.0.6", patchedVersion: "4.0.6" }],
+          },
+          installedVersions: ["4.0.7"],
+          dependerRanges: ["^4.0.0", "^2.3.1"],
+        },
+      ],
+      [],
+    );
+    expect(next[0]!.statuses).not.toContain("REMOVABLE");
+    expect(next[0]!.status).toBe("OK");
+  });
+});
+
+describe("parentRangesAlreadySafe", () => {
+  const advisories = [{ severity: "high" as const, vulnerableRange: "< 4.0.6", patchedVersion: "4.0.6" }];
+
+  it("is false when a parent still allows a vulnerable floor", () => {
+    expect(parentRangesAlreadySafe(["^4.0.0", "^2.3.1"], advisories)).toBe(false);
+  });
+
+  it("is true when every parent already requires the patched floor", () => {
+    expect(parentRangesAlreadySafe(["^4.0.7", "4.0.6"], advisories)).toBe(true);
+  });
 });
 
 describe("toMarkdown removable section", () => {
@@ -211,6 +244,44 @@ describe("toMarkdown removable section", () => {
     expect(md).toContain(removableReasonLabel("no-vulnerable-version"));
     expect(md).toContain("## Dependency chains");
     expect(md).toContain("express@4 → qs@6.11.2");
+  });
+
+  it("does not list KEEP results under Safe to remove", () => {
+    const md = toMarkdown({
+      title: "t",
+      generatedAt: "now",
+      cwd: "/x",
+      summary: {},
+      entries: [
+        {
+          entry: {
+            id: "1",
+            status: "active",
+            package: "picomatch",
+            forcedVersion: "^4.0.4",
+            scope: { type: "global" },
+            advisories: [],
+            reason: "r",
+            strategy: "override",
+            rootPackages: ["a"],
+            dependencyChains: [],
+            packageManager: "npm",
+            manifestPath: "package.json",
+            createdAt: "",
+            createdBy: "",
+            reviewBy: "",
+            reviewReason: "",
+          },
+          status: "OK",
+          statuses: ["OK"],
+          suggestedAction: "keep",
+          issues: [],
+          verifyOutcome: "KEEP",
+        },
+      ],
+    });
+    expect(md).not.toContain("## Safe to remove");
+    expect(md).toContain("KEEP");
   });
 
   it("lists NEW and OVERDUE before OK", () => {

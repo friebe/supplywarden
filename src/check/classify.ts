@@ -5,6 +5,7 @@ import { analyzeNpmGraph } from "../graph/npm.js";
 import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
 import { daysOverdue, isPast } from "../util/time.js";
 import type {
+  Advisory,
   AuditFinding,
   CheckEntry,
   CheckStatus,
@@ -52,6 +53,12 @@ function overridePresent(cwd: string, entry: MetadataEntry): boolean {
   } catch {
     return false;
   }
+}
+
+/** True when every depender already requires a patched floor — override is leftover, not holding the tree. */
+export function parentRangesAlreadySafe(ranges: string[], advisories: Advisory[]): boolean {
+  if (!advisories.length || !ranges.length) return false;
+  return ranges.every((range) => specFloorSafe(range, advisories));
 }
 
 export function classifyEntry(
@@ -108,9 +115,11 @@ export function classifyEntry(
       removableReason = "root-upgrade-candidate";
     }
   } else if (entry.status === "active" && graph.inTree && vulnVersions.length === 0 && entry.advisories.length > 0) {
-    statuses.push("RESOLVED");
-    statuses.push("REMOVABLE");
-    removableReason = "no-vulnerable-version";
+    if (parentRangesAlreadySafe(graph.dependerRanges, entry.advisories)) {
+      statuses.push("RESOLVED");
+      statuses.push("REMOVABLE");
+      removableReason = "no-vulnerable-version";
+    }
   } else if (entry.status === "active" && graph.inTree && onlyForcedInTree && overrideSafe) {
     const rootsCanTakeIt = graph.roots.length > 0 && graph.roots.length <= 3;
     if (rootsCanTakeIt) {
@@ -136,6 +145,7 @@ export function classifyEntry(
     roots,
     chains,
     installedVersions: graph.versions,
+    dependerRanges: graph.dependerRanges,
   };
 }
 
@@ -147,14 +157,14 @@ export function reconcileWithAudit(classified: CheckEntry[], findings: AuditFind
     if (item.statuses.includes("DRIFT")) return item;
     if (findingPkgs.has(item.entry.package)) return item;
 
+    const parentsSafe = parentRangesAlreadySafe(item.dependerRanges ?? [], item.entry.advisories);
     const lockfileSupports =
       item.statuses.includes("RESOLVED") ||
       item.statuses.includes("REMOVABLE") ||
       item.removableReason === "not-in-tree" ||
       item.removableReason === "no-vulnerable-version" ||
       item.removableReason === "already-at-patched" ||
-      (item.entry.advisories.length > 0 &&
-        (item.installedVersions ?? []).every((v) => !stillVulnerable(v, item.entry.advisories))) ||
+      parentsSafe ||
       (item.installedVersions ?? []).length === 0;
 
     if (!lockfileSupports) return item;
@@ -311,6 +321,7 @@ export function classifyUntrackedOverride(cwd: string, entry: MetadataEntry): Ch
     roots,
     chains,
     installedVersions: graph.versions,
+    dependerRanges: graph.dependerRanges,
   };
 }
 

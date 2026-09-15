@@ -14,12 +14,14 @@ export function nextCommands(e: CheckEntry): string[] {
   }
   if (st.includes("DRIFT")) return ["supplywarden sync"];
   if (st.includes("PENDING_VERIFY")) return ["npm install"];
-  if (st.includes("VERIFY_FAILED")) return [`supplywarden why ${pkg}`];
-  if (
-    st.includes("REMOVABLE") ||
-    st.includes("RESOLVED") ||
-    e.verifyOutcome === "CONFIRMED_REMOVABLE"
-  ) {
+  if (st.includes("VERIFY_FAILED") || e.verifyOutcome === "VERIFY_FAILED") {
+    return [`supplywarden why ${pkg}`];
+  }
+  if (e.verifyOutcome === "KEEP") return [`supplywarden why ${pkg}`];
+  if (e.verifyOutcome === "CONFIRMED_REMOVABLE") {
+    return [`supplywarden verify ${pkg} --apply`];
+  }
+  if (st.includes("REMOVABLE") || st.includes("RESOLVED")) {
     return [`supplywarden verify ${pkg} --apply`];
   }
   if (pkg) return [`supplywarden why ${pkg}`];

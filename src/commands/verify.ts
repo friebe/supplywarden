@@ -136,6 +136,8 @@ export async function runVerify(opts: {
           : `audit failed: ${auditResult.error}`;
       probed.push({
         ...candidate,
+        status: "OK",
+        statuses: ["OK"],
         verifyOutcome: "KEEP",
         suggestedAction: `Keep override — ${why}; inspect with \`supplywarden why ${candidate.entry.package}\``,
       });

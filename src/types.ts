@@ -119,6 +119,8 @@ export type GraphAnalysis = {
   inTree: boolean;
   roots: RootPackage[];
   chains: DependencyChain[];
+  /** Declared ranges from packages that depend on this one (lockfile). */
+  dependerRanges: string[];
 };
 
 export type PackageAlertGroup = {
@@ -164,6 +166,7 @@ export type CheckEntry = {
   roots?: string[];
   chains?: string[];
   installedVersions?: string[];
+  dependerRanges?: string[];
   verifyOutcome?: VerifyOutcome;
   decision?: Decision;
 };

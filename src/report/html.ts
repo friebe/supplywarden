@@ -104,8 +104,10 @@ const FALLBACK_HTML = `<!DOCTYPE html>
       }
       if (st.includes('DRIFT')) return ['supplywarden sync'];
       if (st.includes('PENDING_VERIFY')) return ['npm install'];
-      if (st.includes('VERIFY_FAILED')) return ['supplywarden why ' + pkg];
-      if (st.includes('REMOVABLE') || st.includes('RESOLVED') || e.verifyOutcome === 'CONFIRMED_REMOVABLE') {
+      if (st.includes('VERIFY_FAILED') || e.verifyOutcome === 'VERIFY_FAILED') return ['supplywarden why ' + pkg];
+      if (e.verifyOutcome === 'KEEP') return ['supplywarden why ' + pkg];
+      if (e.verifyOutcome === 'CONFIRMED_REMOVABLE') return ['supplywarden verify ' + pkg + ' --apply'];
+      if (st.includes('REMOVABLE') || st.includes('RESOLVED')) {
         return ['supplywarden verify ' + pkg + ' --apply'];
       }
       return pkg ? ['supplywarden why ' + pkg] : [];
@@ -136,6 +138,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
       cards.appendChild(el);
     }
     function canRemove(e) {
+      if (e.verifyOutcome === 'KEEP' || e.verifyOutcome === 'VERIFY_FAILED') return false;
       return (e.statuses || []).includes('REMOVABLE') || (e.statuses || []).includes('RESOLVED');
     }
     function actionRank(e) {

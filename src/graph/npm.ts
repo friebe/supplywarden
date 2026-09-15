@@ -47,7 +47,7 @@ function allDeps(meta: LockPackage | undefined): Record<string, string> {
 export function analyzeNpmGraph(cwd: string, pkgName: string): GraphAnalysis {
   const lock = loadLockfile(cwd);
   if (!lock?.packages) {
-    return { package: pkgName, versions: [], inTree: false, roots: [], chains: [] };
+    return { package: pkgName, versions: [], inTree: false, roots: [], chains: [], dependerRanges: [] };
   }
 
   const packages = lock.packages;
@@ -60,6 +60,13 @@ export function analyzeNpmGraph(cwd: string, pkgName: string): GraphAnalysis {
   });
 
   const versions = [...new Set(matches.map(([, m]) => m.version).filter(Boolean))] as string[];
+  const dependerRanges = [
+    ...new Set(
+      Object.values(packages)
+        .map((meta) => allDeps(meta)[pkgName])
+        .filter((range): range is string => Boolean(range)),
+    ),
+  ];
   const chains: DependencyChain[] = [];
   const rootMap = new Map<string, RootPackage>();
 
@@ -131,6 +138,7 @@ export function analyzeNpmGraph(cwd: string, pkgName: string): GraphAnalysis {
     inTree: matches.length > 0,
     roots: [...rootMap.values()],
     chains,
+    dependerRanges,
   };
 }
 
