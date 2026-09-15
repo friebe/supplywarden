@@ -53,6 +53,10 @@ describe("nextCommands", () => {
     expect(nextCommands({ ...entry("picomatch", ["OK"]), weakOverride: true })).toEqual([
       "supplywarden fix --apply",
     ]);
+    expect(
+      nextCommands({ ...entry("picomatch", ["OK"]), auditClear: true, weakOverride: true }),
+    ).toEqual(["supplywarden verify picomatch"]);
+    expect(nextCommands(entry("picomatch", ["OK"]))).toEqual(["supplywarden verify picomatch"]);
   });
 });
 

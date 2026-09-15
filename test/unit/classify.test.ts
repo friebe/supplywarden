@@ -214,6 +214,10 @@ describe("reconcileWithAudit", () => {
     );
     expect(next[0]!.statuses).not.toContain("REMOVABLE");
     expect(next[0]!.status).toBe("OK");
+    expect(next[0]!.auditClear).toBe(true);
+    expect(next[0]!.suggestedAction).toMatch(/hint/);
+    expect(next[0]!.suggestedAction).toMatch(/verify picomatch/);
+    expect(next[0]!.suggestedAction).not.toMatch(/will KEEP/);
   });
 });
 

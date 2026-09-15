@@ -122,10 +122,11 @@ export async function runVerify(opts: {
         : false,
     );
 
+    const auditFailed = Boolean(auditResult.error);
     const keep =
       pkgFindings.length > 0 ||
-      stillVuln.length > 0 ||
-      (Boolean(auditResult.error) && !leftoverHeuristic(candidate) && installedOk);
+      (auditFailed && stillVuln.length > 0) ||
+      (auditFailed && !leftoverHeuristic(candidate) && installedOk);
 
     restoreFiles(cwd, snap);
 
@@ -136,8 +137,8 @@ export async function runVerify(opts: {
       const need = firstSafeForcedVersion(candidate.entry.advisories);
       const why = pkgFindings.length
         ? `audit still reports ${pkgFindings.length} finding(s)`
-        : stillVuln.length
-          ? `lockfile still has vulnerable version(s): ${stillVuln.join(", ")}`
+        : auditFailed && stillVuln.length
+          ? `audit failed and lockfile still has version(s) matching stored advisories: ${stillVuln.join(", ")}`
           : `audit failed: ${auditResult.error}`;
       probed.push({
         ...candidate,

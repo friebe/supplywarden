@@ -4,7 +4,8 @@ import type { CheckEntry } from "../types.js";
 export function nextCommands(e: CheckEntry): string[] {
   const pkg = e.entry.package;
   const st = e.statuses.length ? e.statuses : [e.status];
-  if (st.includes("NEW") || e.weakOverride) return ["supplywarden fix --apply"];
+  if (st.includes("NEW")) return ["supplywarden fix --apply"];
+  if (e.weakOverride && !e.auditClear) return ["supplywarden fix --apply"];
   if (st.includes("UNTRACKED")) {
     const cmds = ["supplywarden init"];
     if (st.includes("REMOVABLE") || st.includes("RESOLVED")) {
@@ -27,7 +28,10 @@ export function nextCommands(e: CheckEntry): string[] {
   if (st.includes("REMOVABLE") || st.includes("RESOLVED")) {
     return [`supplywarden verify ${pkg} --apply`];
   }
-  if (pkg) return [`supplywarden why ${pkg}`];
+  if (e.auditClear) return [`supplywarden verify ${pkg}`];
+  if (e.weakOverride) return ["supplywarden fix --apply"];
+  if (st.includes("OVERDUE") || st.includes("STALE")) return [`supplywarden why ${pkg}`];
+  if (pkg) return [`supplywarden verify ${pkg}`];
   return [];
 }
 

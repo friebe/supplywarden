@@ -96,7 +96,8 @@ const FALLBACK_HTML = `<!DOCTYPE html>
       if (e.commands && e.commands.length) return e.commands;
       const pkg = (e.entry && e.entry.package) || '';
       const st = e.statuses && e.statuses.length ? e.statuses : [e.status];
-      if (st.includes('NEW') || e.weakOverride) return ['supplywarden fix --apply'];
+      if (st.includes('NEW')) return ['supplywarden fix --apply'];
+      if (e.weakOverride && !e.auditClear) return ['supplywarden fix --apply'];
       if (st.includes('UNTRACKED')) {
         const cmds = ['supplywarden init'];
         if (st.includes('REMOVABLE') || st.includes('RESOLVED')) cmds.push('supplywarden verify ' + pkg + ' --apply');
@@ -113,7 +114,10 @@ const FALLBACK_HTML = `<!DOCTYPE html>
       if (st.includes('REMOVABLE') || st.includes('RESOLVED')) {
         return ['supplywarden verify ' + pkg + ' --apply'];
       }
-      return pkg ? ['supplywarden why ' + pkg] : [];
+      if (e.auditClear) return ['supplywarden verify ' + pkg];
+      if (e.weakOverride) return ['supplywarden fix --apply'];
+      if (st.includes('OVERDUE') || st.includes('STALE')) return ['supplywarden why ' + pkg];
+      return pkg ? ['supplywarden verify ' + pkg] : [];
     }
     function rewriteLegacy(s, pkg) {
       return String(s || '')
@@ -183,7 +187,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
       let body = '';
       if (versions.length) body += '<div class="chain">Lockfile: ' + esc(versions.join(', ')) + ' (forced: ' + esc(e.entry.forcedVersion) + ')</div>';
       const ranges = e.dependerRanges || [];
-      if (ranges.length) body += '<div class="chain">Declared ranges: ' + esc(ranges.join(', ')) + '</div>';
+      if (ranges.length) body += '<div class="chain">Dependents asked for (lockfile specs, not installed): ' + esc(ranges.join(', ')) + '</div>';
       if (roots.length) body += '<div class="chain">Roots: ' + esc(roots.join(', ')) + '</div>';
       for (const c of chains) body += '<div class="chain">' + esc(c) + '</div>';
       return '<details><summary>Roots &amp; dependency chains</summary>' + body + '</details>';

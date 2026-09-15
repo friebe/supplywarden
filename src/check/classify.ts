@@ -167,7 +167,13 @@ export function reconcileWithAudit(classified: CheckEntry[], findings: AuditFind
       parentsSafe ||
       (item.installedVersions ?? []).length === 0;
 
-    if (!lockfileSupports) return item;
+    if (!lockfileSupports) {
+      return {
+        ...item,
+        auditClear: true,
+        suggestedAction: auditClearHint(item),
+      };
+    }
 
     const statuses = new Set(item.statuses);
     statuses.delete("OK");
@@ -290,14 +296,24 @@ function holdingOverrideAction(
   const threshold = hold?.threshold ?? 3;
   if (hold?.onlyForcedInTree && n > threshold) {
     const ver = hold.installed ? `@${hold.installed}` : "";
-    return `Override still required — ${pkg}${ver} is in the lockfile because the override holds ${n} roots (threshold ${threshold} → keep override, not a root upgrade). \`verify --apply\` will KEEP. Inspect with \`supplywarden why ${pkg}\``;
+    return `Installed ${pkg}${ver} is held for ${n} roots (threshold ${threshold} → not a root upgrade). Parent specs may still allow older versions — a hint, not a block. Run \`supplywarden verify ${pkg}\` to test dropping it.`;
   }
   if (hold?.onlyForcedInTree && n > 0 && n <= threshold) {
-    return `Override still required. ${n} root(s) ≤ threshold ${threshold}: prefer upgrading ${roots.join(", ")} instead of dropping the override. Run \`supplywarden why ${pkg}\``;
+    return `Override may still be holding the tree. ${n} root(s) ≤ threshold ${threshold}: prefer upgrading ${roots.join(", ")}. Or run \`supplywarden verify ${pkg}\` to test dropping the override.`;
   }
   return roots.length
-    ? `Override still required — pulled by ${roots.join(", ")}. Run \`supplywarden why ${pkg}\``
-    : `Override still required — run \`supplywarden why ${pkg}\``;
+    ? `Override may still be holding the tree — pulled by ${roots.join(", ")}. Run \`supplywarden verify ${pkg}\` to test dropping it.`
+    : `Override may still be holding the tree — run \`supplywarden verify ${pkg}\` to test dropping it.`;
+}
+
+function auditClearHint(item: CheckEntry): string {
+  const pkg = item.entry.package;
+  const installed = (item.installedVersions ?? []).join(", ") || "unknown";
+  const ranges = item.dependerRanges ?? [];
+  const rangeNote = ranges.length
+    ? ` Parents still declare ${ranges.join(", ")} (lockfile specs, not installed). That is a hint — not a block.`
+    : "";
+  return `Live npm audit does not list ${pkg} (installed ${installed}).${rangeNote} Run \`supplywarden verify ${pkg}\` to test dropping the override.`;
 }
 
 function suggestUntracked(reason: RemovableReason | undefined, pkg: string, roots: string[]): string {

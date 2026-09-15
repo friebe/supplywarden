@@ -488,9 +488,22 @@ describe("runVerify", () => {
       });
       expect(result.report.entries).toHaveLength(1);
       expect(result.report.entries[0]!.entry.package).toBe("qs");
-      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
+      expect(result.report.entries[0]!.verifyOutcome).toBe("CONFIRMED_REMOVABLE");
       const pkg = readPackageJson(dir);
       expect(pkg.overrides?.qs).toBe("6.11.2");
+    });
+  });
+
+  it("keeps override when audit fails and lockfile still matches stored advisories", async () => {
+    await withFixture("npm-mixed", async (dir) => {
+      const result = await runVerify({
+        cwd: dir,
+        package: "qs",
+        skipInstall: true,
+        audit: createStaticAudit([], "npm audit failed"),
+        install: createStaticInstall(),
+      });
+      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
     });
   });
 

@@ -100,7 +100,9 @@ export function toMarkdown(report: ReportModel): string {
       lines.push(`### ${e.entry.package}@${e.entry.forcedVersion}`, "");
       lines.push(`- **Lockfile:** ${installed} (forced: ${e.entry.forcedVersion})`);
       if (e.dependerRanges?.length) {
-        lines.push(`- **Declared ranges:** ${e.dependerRanges.join(", ")}`);
+        lines.push(
+          `- **Dependents asked for (lockfile specs, not installed):** ${e.dependerRanges.join(", ")}`,
+        );
       }
       lines.push(`- **Roots:** ${e.roots?.join(", ") || "—"}`);
       for (const chain of e.chains ?? []) {

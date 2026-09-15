@@ -119,7 +119,7 @@ export type GraphAnalysis = {
   inTree: boolean;
   roots: RootPackage[];
   chains: DependencyChain[];
-  /** Declared ranges from packages that depend on this one (lockfile). */
+  /** Parent lockfile specs for this package (what dependents asked for, not installed). */
   dependerRanges: string[];
 };
 
@@ -169,6 +169,8 @@ export type CheckEntry = {
   dependerRanges?: string[];
   /** Override spec still allows vulnerable versions — keeping it is a no-op. */
   weakOverride?: boolean;
+  /** Live audit does not list this package. Parent specs are a hint, not a KEEP. */
+  auditClear?: boolean;
   verifyOutcome?: VerifyOutcome;
   decision?: Decision;
 };
