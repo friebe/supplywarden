@@ -167,6 +167,8 @@ export type CheckEntry = {
   chains?: string[];
   installedVersions?: string[];
   dependerRanges?: string[];
+  /** Override spec still allows vulnerable versions — keeping it is a no-op. */
+  weakOverride?: boolean;
   verifyOutcome?: VerifyOutcome;
   decision?: Decision;
 };

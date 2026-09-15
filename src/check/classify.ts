@@ -2,6 +2,7 @@ import { specAtLeast, specFloorSafe, specMinVersion, versionSatisfiesSpec } from
 import { firstSafeForcedVersion, stillVulnerable } from "../decision/engine.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
 import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
+import { loadConfig } from "../config.js";
 import { daysOverdue, isPast } from "../util/time.js";
 import type {
   Advisory,
@@ -70,6 +71,7 @@ export function classifyEntry(
   const graph = analyzeNpmGraph(cwd, entry.package);
   const roots = graph.roots.map((r) => r.name);
   const chains = graph.chains.map((c) => c.path.join(" → "));
+  const threshold = loadConfig(cwd).upgradeRootThreshold;
   let removableReason: RemovableReason | undefined;
 
   if (entry.status === "pending_verify") {
@@ -94,11 +96,12 @@ export function classifyEntry(
   );
   const onlyForcedInTree =
     graph.versions.length === 1 && versionSatisfiesSpec(graph.versions[0]!, entry.forcedVersion);
-  const overrideSafe =
-    entry.advisories.length === 0 || specFloorSafe(entry.forcedVersion, entry.advisories);
   const lockfileSafe =
     vulnVersions.length === 0 && (entry.advisories.length > 0 || onlyForcedInTree);
   const alreadyPatched = directDepAlreadyAtPatched(cwd, entry);
+  const parentsSafe = parentRangesAlreadySafe(graph.dependerRanges, entry.advisories);
+  const weakOverride =
+    entry.advisories.length > 0 && !specFloorSafe(entry.forcedVersion, entry.advisories);
 
   if (entry.status === "active" && !graph.inTree) {
     statuses.push("RESOLVED");
@@ -108,24 +111,14 @@ export function classifyEntry(
     statuses.push("RESOLVED");
     statuses.push("REMOVABLE");
     removableReason = "already-at-patched";
-  } else if (entry.status === "active" && graph.inTree && entry.advisories.length === 0) {
-    if (onlyForcedInTree) {
-      statuses.push("REMOVABLE");
-      removableReason = "root-upgrade-candidate";
-    }
-  } else if (entry.status === "active" && graph.inTree && vulnVersions.length === 0 && entry.advisories.length > 0) {
-    if (parentRangesAlreadySafe(graph.dependerRanges, entry.advisories)) {
-      statuses.push("RESOLVED");
-      statuses.push("REMOVABLE");
-      removableReason = "no-vulnerable-version";
-    }
-  } else if (entry.status === "active" && graph.inTree && onlyForcedInTree && overrideSafe) {
-    const rootsCanTakeIt = graph.roots.length > 0 && graph.roots.length <= 3;
-    if (rootsCanTakeIt) {
-      statuses.push("REMOVABLE");
-      removableReason = "root-upgrade-candidate";
-    }
+  } else if (entry.status === "active" && graph.inTree && vulnVersions.length === 0 && parentsSafe) {
+    statuses.push("RESOLVED");
+    statuses.push("REMOVABLE");
+    removableReason = "no-vulnerable-version";
   }
+
+  // onlyForcedInTree with many roots = the override is holding the tree, not leftover.
+  // Few roots = prefer upgrading those packages; still not verify --apply.
 
   if (entry.status === "active" && isPast(entry.reviewBy, now)) {
     statuses.push("OVERDUE");
@@ -138,13 +131,21 @@ export function classifyEntry(
     entry,
     status: primary,
     statuses,
-    suggestedAction: suggest(primary, entry, roots, now, removableReason),
+    suggestedAction: suggest(primary, entry, roots, now, removableReason, {
+      threshold,
+      onlyForcedInTree,
+      installed: graph.versions[0],
+      weak: weakOverride && !statuses.includes("REMOVABLE") && !statuses.includes("RESOLVED"),
+      forced: entry.forcedVersion,
+      need: firstSafeForcedVersion(entry.advisories),
+    }),
     issues,
     removableReason,
     roots,
     chains,
     installedVersions: graph.versions,
     dependerRanges: graph.dependerRanges,
+    weakOverride: weakOverride && !statuses.includes("REMOVABLE") && !statuses.includes("RESOLVED"),
   };
 }
 
@@ -213,7 +214,7 @@ export function removableReasonLabel(reason?: RemovableReason): string {
     case "already-at-patched":
       return "package.json already depends on the patched version — override is leftover";
     case "root-upgrade-candidate":
-      return "Only the forced version is in the tree — consider a root upgrade";
+      return "Lockfile shows only the forced version because the override is holding it — not leftover";
     case "audit-clear":
       return "Live audit no longer lists this package";
     default:
@@ -227,6 +228,14 @@ function suggest(
   roots: string[],
   now: Date,
   reason?: RemovableReason,
+  hold?: {
+    threshold: number;
+    onlyForcedInTree: boolean;
+    installed?: string;
+    weak?: boolean;
+    forced?: string;
+    need?: string;
+  },
 ): string {
   const pkg = entry.package;
   switch (status) {
@@ -234,15 +243,14 @@ function suggest(
       if (reason === "already-at-patched") {
         return `package.json already depends on patched ${pkg} — leftover override, run \`supplywarden verify ${pkg} --apply\``;
       }
-      return roots.length
-        ? `Consider a root upgrade (${roots.join(", ")}) — run \`supplywarden why ${pkg}\` then \`supplywarden verify ${pkg} --apply\``
-        : `Override resolved naturally — run \`supplywarden verify ${pkg} --apply\``;
+      return `Override resolved naturally — run \`supplywarden verify ${pkg} --apply\``;
     case "RESOLVED":
       if (reason === "already-at-patched") {
         return `package.json already depends on patched ${pkg} — leftover override, run \`supplywarden verify ${pkg} --apply\``;
       }
       return `No longer in the lockfile / no longer vulnerable — run \`supplywarden verify ${pkg} --apply\``;
     case "OVERDUE":
+      if (hold?.weak) return holdingOverrideAction(pkg, roots, hold);
       return `Review ${daysOverdue(entry.reviewBy, now)}d overdue — run \`supplywarden why ${pkg}\``;
     case "DRIFT":
       return "package.json drifted — run `supplywarden sync`";
@@ -257,10 +265,39 @@ function suggest(
     case "STALE":
       return `Override is stale — run \`supplywarden why ${pkg}\``;
     default:
-      return roots.length
-        ? `Override still required — pulled by ${roots.join(", ")}. Run \`supplywarden why ${pkg}\``
-        : `Override still required — run \`supplywarden why ${pkg}\``;
+      return holdingOverrideAction(pkg, roots, hold);
   }
+}
+
+function holdingOverrideAction(
+  pkg: string,
+  roots: string[],
+  hold?: {
+    threshold: number;
+    onlyForcedInTree: boolean;
+    installed?: string;
+    weak?: boolean;
+    forced?: string;
+    need?: string;
+  },
+): string {
+  if (hold?.weak) {
+    const need = hold.need ?? "a patched version";
+    const installed = hold.installed ? ` Lockfile is ${hold.installed}.` : "";
+    return `Override ${hold.forced ?? "spec"} still allows vulnerable versions (need ${need}).${installed} Keeping it is a no-op — run \`supplywarden fix --apply\`, not \`verify --apply\``;
+  }
+  const n = roots.length;
+  const threshold = hold?.threshold ?? 3;
+  if (hold?.onlyForcedInTree && n > threshold) {
+    const ver = hold.installed ? `@${hold.installed}` : "";
+    return `Override still required — ${pkg}${ver} is in the lockfile because the override holds ${n} roots (threshold ${threshold} → keep override, not a root upgrade). \`verify --apply\` will KEEP. Inspect with \`supplywarden why ${pkg}\``;
+  }
+  if (hold?.onlyForcedInTree && n > 0 && n <= threshold) {
+    return `Override still required. ${n} root(s) ≤ threshold ${threshold}: prefer upgrading ${roots.join(", ")} instead of dropping the override. Run \`supplywarden why ${pkg}\``;
+  }
+  return roots.length
+    ? `Override still required — pulled by ${roots.join(", ")}. Run \`supplywarden why ${pkg}\``
+    : `Override still required — run \`supplywarden why ${pkg}\``;
 }
 
 function suggestUntracked(reason: RemovableReason | undefined, pkg: string, roots: string[]): string {
@@ -271,7 +308,7 @@ function suggestUntracked(reason: RemovableReason | undefined, pkg: string, root
     return `package.json already depends on patched ${pkg} — leftover override, run \`supplywarden init\` then \`supplywarden verify ${pkg} --apply\``;
   }
   if (reason === "root-upgrade-candidate") {
-    return `Untracked override only forced version, roots ${roots.join(", ")} — run \`supplywarden init\` then \`supplywarden verify ${pkg} --apply\``;
+    return `Untracked override only forced version, roots ${roots.join(", ")} — run \`supplywarden init\` then \`supplywarden why ${pkg}\` (not verify --apply)`;
   }
   if (roots.length) {
     return `Untracked override still pulled by ${roots.join(", ")} — run \`supplywarden init\``;
@@ -298,13 +335,11 @@ export function classifyUntrackedOverride(cwd: string, entry: MetadataEntry): Ch
     statuses.push("REMOVABLE");
     removableReason = "already-at-patched";
   } else if (
-    graph.versions.length === 1 &&
-    versionSatisfiesSpec(graph.versions[0]!, entry.forcedVersion) &&
-    roots.length > 0 &&
-    roots.length <= 3
+    entry.advisories.length > 0 &&
+    parentRangesAlreadySafe(graph.dependerRanges, entry.advisories)
   ) {
     statuses.push("REMOVABLE");
-    removableReason = "root-upgrade-candidate";
+    removableReason = "no-vulnerable-version";
   }
 
   return {

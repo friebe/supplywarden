@@ -1,7 +1,8 @@
 import { analyzeNpmGraph } from "../graph/npm.js";
-import { stillVulnerable } from "../decision/engine.js";
+import { firstSafeForcedVersion, stillVulnerable } from "../decision/engine.js";
 import { loadConfig } from "../config.js";
 import { listOverridesToProbe } from "./check.js";
+import { specFloorSafe } from "../util/semver-spec.js";
 import { readMetadata, writeMetadata } from "../metadata/store.js";
 import { deleteOverrideFromManifest, syncOverridesToPackageJson } from "../metadata/sync.js";
 import { createLiveAudit, filterFindings } from "../audit/client.js";
@@ -129,6 +130,10 @@ export async function runVerify(opts: {
     restoreFiles(cwd, snap);
 
     if (keep) {
+      const weak =
+        candidate.entry.advisories.length > 0 &&
+        !specFloorSafe(candidate.entry.forcedVersion, candidate.entry.advisories);
+      const need = firstSafeForcedVersion(candidate.entry.advisories);
       const why = pkgFindings.length
         ? `audit still reports ${pkgFindings.length} finding(s)`
         : stillVuln.length
@@ -139,9 +144,16 @@ export async function runVerify(opts: {
         status: "OK",
         statuses: ["OK"],
         verifyOutcome: "KEEP",
-        suggestedAction: `Keep override — ${why}; inspect with \`supplywarden why ${candidate.entry.package}\``,
+        weakOverride: weak,
+        suggestedAction: weak
+          ? `Override ${candidate.entry.forcedVersion} does not close the advisory (need ${need ?? "a patched version"}). Keeping it is a no-op — run \`supplywarden fix --apply\`, not verify --apply`
+          : `Keep override — ${why}; inspect with \`supplywarden why ${candidate.entry.package}\``,
       });
-      messages.push(`${candidate.entry.package}: KEEP (${why})`);
+      messages.push(
+        weak
+          ? `${candidate.entry.package}: KEEP (weak override ${candidate.entry.forcedVersion}; run fix --apply)`
+          : `${candidate.entry.package}: KEEP (${why})`,
+      );
     } else {
       probed.push({
         ...candidate,

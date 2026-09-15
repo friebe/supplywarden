@@ -67,7 +67,7 @@ File: `.supplywardenrc.json` in the project (example: `.supplywardenrc.example.j
 | Key | Default | Effect |
 |-----|---------|--------|
 | `audit.minSeverity` | `"high"` | After `npm`/`pnpm`/`yarn audit`, drop findings below this label. `critical` > `high` > `medium` > `low`. |
-| `upgradeRootThreshold` | `3` | `check` / `fix`: if this many (or fewer) roots pull the vuln package, prefer **upgrade**; more roots → **override**. |
+| `upgradeRootThreshold` | `3` | `check` / `fix`: if this many (or fewer) roots pull the vuln package, prefer **upgrade**; more roots → **override**. A lockfile that only shows the forced version with *more* roots than this is the override working, not leftover — not `verify --apply`. |
 | `defaultReviewDays` | `7` | New overrides get `reviewBy` = now + N days. After that, `--strict` fails on high/critical **OVERDUE**. |
 | `metadataPath` | `"security-metadata.json"` | Where override records live. |
 | `impactWarnThreshold` | `20` | `fix --apply` logs a warning if the estimated lockfile change is this large (does not block). |

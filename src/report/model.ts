@@ -99,6 +99,9 @@ export function toMarkdown(report: ReportModel): string {
       const installed = e.installedVersions?.join(", ") || "—";
       lines.push(`### ${e.entry.package}@${e.entry.forcedVersion}`, "");
       lines.push(`- **Lockfile:** ${installed} (forced: ${e.entry.forcedVersion})`);
+      if (e.dependerRanges?.length) {
+        lines.push(`- **Declared ranges:** ${e.dependerRanges.join(", ")}`);
+      }
       lines.push(`- **Roots:** ${e.roots?.join(", ") || "—"}`);
       for (const chain of e.chains ?? []) {
         lines.push(`- ${chain}`);

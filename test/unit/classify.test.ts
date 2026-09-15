@@ -120,6 +120,33 @@ describe("classifyEntry", () => {
     });
     expect(result.removableReason).not.toBe("already-at-patched");
   });
+
+  it("treats a weak override as a no-op to raise, not as leftover to drop", () => {
+    const result = classifyEntry(fixtureDir("npm-mixed"), {
+      id: "qs-weak",
+      status: "active",
+      package: "qs",
+      forcedVersion: "^6.5.0",
+      scope: { type: "global" },
+      advisories: [
+        { ghsaId: "GHSA-qs-high", severity: "high", vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" },
+      ],
+      reason: "weak range",
+      strategy: "override",
+      rootPackages: ["express"],
+      dependencyChains: [],
+      packageManager: "npm",
+      manifestPath: "package.json",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      createdBy: "fixture",
+      reviewBy: "2026-12-01T00:00:00.000Z",
+      reviewReason: "check",
+    });
+    expect(result.statuses).not.toContain("REMOVABLE");
+    expect(result.weakOverride).toBe(true);
+    expect(result.suggestedAction).toMatch(/fix --apply/);
+    expect(result.suggestedAction).toMatch(/no-op/);
+  });
 });
 
 describe("reconcileWithAudit", () => {

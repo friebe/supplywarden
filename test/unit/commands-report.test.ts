@@ -50,6 +50,9 @@ describe("nextCommands", () => {
     expect(nextCommands({ ...entry("picomatch", ["REMOVABLE"]), verifyOutcome: "KEEP" })).toEqual([
       "supplywarden why picomatch",
     ]);
+    expect(nextCommands({ ...entry("picomatch", ["OK"]), weakOverride: true })).toEqual([
+      "supplywarden fix --apply",
+    ]);
   });
 });
 
