@@ -7,6 +7,7 @@ import {
   sortCheckEntries,
 } from "../check/classify.js";
 import { decide } from "../decision/engine.js";
+import { specFloorSafe } from "../util/semver-spec.js";
 import { readMetadata } from "../metadata/store.js";
 import { nowIso } from "../util/time.js";
 import {
@@ -195,7 +196,10 @@ function newFindingAction(
       .join(", ");
     return `New ${sev}: UPGRADE ${targets || roots.join(", ") || group.package} — run \`supplywarden fix --apply\``;
   }
-  const ver = decision.forcedVersion ?? group.forcedVersion ?? "?";
+  const ver = decision.forcedVersion ?? group.forcedVersion;
+  if (!ver || !specFloorSafe(ver, group.advisories)) {
+    return `New ${sev}: ${group.package} has no safe override version — inspect with \`supplywarden why ${group.package}\` (not \`fix --apply\`)`;
+  }
   const rootPart = roots.length ? ` (roots: ${roots.join(", ")})` : "";
   return `New ${sev}: OVERRIDE ${group.package}@${ver}${rootPart} — run \`supplywarden fix --apply\``;
 }

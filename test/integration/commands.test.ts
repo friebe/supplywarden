@@ -218,7 +218,7 @@ describe("runWhy / analyze", () => {
 });
 
 describe("validation gates", () => {
-  it("rejects STILL_VULNERABLE overrides", async () => {
+  it("writes a safe override when Dependabot patchedVersion is still inside the range", async () => {
     await withFixture("npm-still-vulnerable", async (dir) => {
       const result = await runFix({
         cwd: dir,
@@ -231,8 +231,28 @@ describe("validation gates", () => {
           },
         },
       });
+      expect(result.exitCode).toBe(0);
+      expect(result.messages.join("\n")).toMatch(/uuid@11\.1\.1/);
+      const pkg = readPackageJson(dir);
+      expect(pkg.overrides?.uuid).toBe("11.1.1");
+    });
+  });
+
+  it("does not write when the advisory has no safe override version", async () => {
+    await withFixture("npm-still-vulnerable", async (dir) => {
+      const result = await runFix({
+        cwd: dir,
+        alertPath: join(FIXTURES_ROOT, "alerts/uuid-unknown-range.json"),
+        apply: true,
+        skipInstall: true,
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+        },
+      });
       expect(result.exitCode).toBe(1);
-      expect(result.report.validation?.some((i) => i.code === "STILL_VULNERABLE")).toBe(true);
+      expect(result.messages.join("\n")).toMatch(/Not writing package.json|No patched version|STILL_VULNERABLE/);
     });
   });
 

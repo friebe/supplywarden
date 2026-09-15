@@ -1,6 +1,5 @@
 import { specAtLeast, specFloorSafe, specMinVersion, versionSatisfiesSpec } from "../util/semver-spec.js";
-import { stillVulnerable } from "../decision/engine.js";
-import { highestPatchedVersion } from "../alerts/dependabot.js";
+import { firstSafeForcedVersion, stillVulnerable } from "../decision/engine.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
 import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
 import { daysOverdue, isPast } from "../util/time.js";
@@ -32,7 +31,7 @@ function declaredDepRange(cwd: string, manifestPath: string, pkgName: string): s
 
 /** Direct dep and/or override spec already require at least the advisory's patched floor. */
 function directDepAlreadyAtPatched(cwd: string, entry: MetadataEntry): boolean {
-  const patched = highestPatchedVersion(entry.advisories);
+  const patched = firstSafeForcedVersion(entry.advisories);
   const overrideFloor = specMinVersion(entry.forcedVersion);
   if (patched && overrideFloor && !specAtLeast(entry.forcedVersion, patched)) return false;
   const range = declaredDepRange(cwd, entry.manifestPath, entry.package);

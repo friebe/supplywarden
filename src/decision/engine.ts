@@ -1,6 +1,6 @@
-import { satisfies, valid } from "semver";
+import { satisfies, valid, gt } from "semver";
 import type { Advisory, Decision, GraphAnalysis, OverrideScope, SupplywardenConfig } from "../types.js";
-import { highestPatchedVersion } from "../alerts/dependabot.js";
+import { inferSafeFloorFromVulnerableRange } from "../util/vuln-range.js";
 
 export function recommend(input: {
   rootCount: number;
@@ -16,7 +16,7 @@ export function decide(opts: {
   advisories: Advisory[];
   config: SupplywardenConfig;
 }): Decision {
-  const forcedVersion = highestPatchedVersion(opts.advisories);
+  const forcedVersion = firstSafeForcedVersion(opts.advisories);
   const rootCount = opts.graph.roots.length || 1;
   const canUpgrade = Boolean(forcedVersion) && rootCount <= opts.config.upgradeRootThreshold;
   const strategy = recommend({
@@ -60,6 +60,29 @@ function stripVersion(segment: string): string {
   const at = segment.lastIndexOf("@");
   if (at <= 0) return segment;
   return segment.slice(0, at);
+}
+
+/** Version that sits outside every advisory range — not merely the `patchedVersion` field. */
+export function firstSafeForcedVersion(advisories: Advisory[]): string | undefined {
+  const floors: string[] = [];
+  for (const advisory of advisories) {
+    if (
+      advisory.patchedVersion &&
+      valid(advisory.patchedVersion) &&
+      !stillVulnerable(advisory.patchedVersion, [advisory])
+    ) {
+      floors.push(advisory.patchedVersion);
+      continue;
+    }
+    const inferred = inferSafeFloorFromVulnerableRange(advisory.vulnerableRange);
+    if (inferred) floors.push(inferred);
+  }
+  if (!floors.length) return undefined;
+  let best = floors[0]!;
+  for (const floor of floors.slice(1)) {
+    if (gt(floor, best)) best = floor;
+  }
+  return stillVulnerable(best, advisories) ? undefined : best;
 }
 
 export function stillVulnerable(version: string, advisories: Advisory[]): boolean {

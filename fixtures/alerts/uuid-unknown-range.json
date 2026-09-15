@@ -1,0 +1,13 @@
+{
+  "number": 3,
+  "state": "open",
+  "dependency": {
+    "package": { "ecosystem": "npm", "name": "uuid" },
+    "manifest_path": "package.json"
+  },
+  "security_advisory": { "ghsa_id": "GHSA-uuid-star", "severity": "high" },
+  "security_vulnerability": {
+    "vulnerable_version_range": "*",
+    "first_patched_version": { "identifier": "10.0.0" }
+  }
+}

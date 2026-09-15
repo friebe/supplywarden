@@ -1,0 +1,4 @@
+{
+  "upgradeRootThreshold": 0,
+  "audit": { "minSeverity": "high" }
+}

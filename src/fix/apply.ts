@@ -40,7 +40,13 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
 
   if (!forcedVersion) {
     const report = baseReport(opts, [], "No patched version in advisory");
-    return { exitCode: 1, report, messages: ["No patched version available"] };
+    return {
+      exitCode: 1,
+      report,
+      messages: [
+        "Not writing package.json — no patched version that closes the advisory",
+      ],
+    };
   }
 
   const metadata = readMetadata(cwd, config);
@@ -75,7 +81,10 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     return {
       exitCode: 1,
       report: { ...report, title: `ABGELEHNT: ${blocked[0]!.code}` },
-      messages: blocked.map((i) => i.message),
+      messages: [
+        `Not writing package.json — ${blocked[0]!.code}`,
+        ...blocked.map((i) => (i.hint ? `${i.message} (${i.hint})` : i.message)),
+      ],
     };
   }
 

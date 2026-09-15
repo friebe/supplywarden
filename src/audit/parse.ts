@@ -1,5 +1,6 @@
 import { minVersion } from "semver";
 import { normalizeSeverity } from "../alerts/dependabot.js";
+import { inferSafeFloorFromVulnerableRange } from "../util/vuln-range.js";
 import type { AuditFinding } from "../types.js";
 
 type AuditVia = {
@@ -58,9 +59,7 @@ function patchedFromPatchedRange(range?: string): string | undefined {
 }
 
 function patchedFromVulnerableRange(range?: string): string | undefined {
-  if (!range) return undefined;
-  const match = range.trim().match(/^<\s*=?\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/);
-  return match?.[1];
+  return inferSafeFloorFromVulnerableRange(range);
 }
 
 function findingKey(finding: AuditFinding): string {
