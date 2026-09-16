@@ -39,7 +39,7 @@ describe("nextCommands", () => {
       "supplywarden verify lodash --apply",
     ]);
     expect(nextCommands(entry("semver", ["PENDING_VERIFY"]))).toEqual(["npm install"]);
-    expect(nextCommands(entry("tar", ["VERIFY_FAILED"]))).toEqual(["supplywarden why tar"]);
+    expect(nextCommands(entry("tar", ["VERIFY_FAILED"]))).toEqual(["supplywarden verify tar"]);
     expect(nextCommands(entry("minimist", ["DRIFT"]))).toEqual(["supplywarden sync"]);
     expect(nextCommands(entry("ws", ["UNTRACKED"]))).toEqual(["supplywarden init"]);
     expect(nextCommands(entry("request", ["UNTRACKED", "REMOVABLE"]))).toEqual([

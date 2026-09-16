@@ -27,6 +27,56 @@ describe("advisory grouping", () => {
     expect(groups[0]!.forcedVersion).toBe("4.8.1");
     expect(highestPatchedVersion(groups[0]!.advisories)).toBe("4.8.1");
   });
+
+  it("labels a Dependabot development-scoped alert", () => {
+    const groups = groupAlerts([
+      {
+        dependency: {
+          package: { name: "picomatch", ecosystem: "npm" },
+          manifest_path: "package.json",
+          scope: "development",
+        },
+        security_advisory: { ghsa_id: "GHSA-dev", severity: "high" },
+        security_vulnerability: { vulnerable_version_range: "< 4.0.1", first_patched_version: { identifier: "4.0.1" } },
+      },
+    ]);
+    expect(groups[0]!.dependencyKind).toBe("development");
+  });
+
+  it("reads Dependabot scopes from alerts/mixed.json", () => {
+    const alerts = loadAlertFile(join(FIXTURES_ROOT, "alerts/mixed.json"));
+    const groups = groupAlerts(Array.isArray(alerts) ? alerts : [alerts]);
+    const byPkg = Object.fromEntries(groups.map((g) => [g.package, g]));
+    expect(byPkg.picomatch?.dependencyKind).toBe("development");
+    expect(byPkg.qs?.dependencyKind).toBe("production");
+    expect(byPkg.qs?.advisories).toHaveLength(2);
+    expect(byPkg.ws?.dependencyKind).toBe("production");
+  });
+
+  it("treats mixed runtime+development as production", () => {
+    const groups = groupAlerts([
+      {
+        dependency: {
+          package: { name: "qs", ecosystem: "npm" },
+          manifest_path: "package.json",
+          scope: "development",
+        },
+        security_advisory: { severity: "high" },
+        security_vulnerability: { vulnerable_version_range: "< 6.11.0" },
+      },
+      {
+        dependency: {
+          package: { name: "qs", ecosystem: "npm" },
+          manifest_path: "package.json",
+          scope: "runtime",
+        },
+        security_advisory: { severity: "high" },
+        security_vulnerability: { vulnerable_version_range: "< 6.11.0" },
+      },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.dependencyKind).toBe("production");
+  });
 });
 
 describe("upgrade targets", () => {

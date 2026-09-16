@@ -17,13 +17,14 @@ import {
   uncoveredFindings,
 } from "../audit/client.js";
 import { importOverridesFromPackageJson } from "../metadata/import.js";
-import { analyzeNpmGraph } from "../graph/npm.js";
+import { analyzeNpmGraph, dependencyKindLabel, mergeDependencyKind } from "../graph/npm.js";
 import { createLiveRegistry } from "../registry/verify.js";
 import type {
   AuditClient,
   CheckEntry,
   CommandResult,
   Decision,
+  DependencyKind,
   MetadataEntry,
   PackageAlertGroup,
   RegistryClient,
@@ -194,8 +195,10 @@ function newFindingAction(
   group: PackageAlertGroup,
   decision: Decision,
   roots: string[],
+  kind?: DependencyKind,
 ): string {
-  const sev = group.maxSeverity.toUpperCase();
+  const kindTag = dependencyKindLabel(kind);
+  const sev = group.maxSeverity.toUpperCase() + (kindTag ? ` (${kindTag})` : "");
   if (decision.strategy === "upgrade") {
     const targets = (decision.upgradeTargets ?? [])
       .map((t) => formatUpgradeTarget(t))
@@ -223,6 +226,7 @@ async function entryFromAuditGroup(
   });
   const roots = graph.roots.map((r) => r.name);
   const chains = graph.chains.map((c) => c.path.join(" → "));
+  const kind = mergeDependencyKind(group.dependencyKind, graph.dependencyKind);
   const entry: MetadataEntry = {
     id: `audit:${group.package}`,
     status: "pending_verify",
@@ -246,11 +250,12 @@ async function entryFromAuditGroup(
     entry,
     status: "NEW",
     statuses: ["NEW"],
-    suggestedAction: newFindingAction(group, decision, roots),
+    suggestedAction: newFindingAction(group, decision, roots, kind),
     issues: [],
     roots,
     chains,
     installedVersions: graph.versions,
     decision,
+    dependencyKind: kind,
   };
 }

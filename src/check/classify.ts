@@ -145,6 +145,7 @@ export function classifyEntry(
     chains,
     installedVersions: graph.versions,
     dependerRanges: graph.dependerRanges,
+    dependencyKind: graph.dependencyKind,
     weakOverride: weakOverride && !statuses.includes("REMOVABLE") && !statuses.includes("RESOLVED"),
   };
 }
@@ -261,7 +262,7 @@ function suggest(
     case "DRIFT":
       return "package.json drifted — run `supplywarden sync`";
     case "VERIFY_FAILED":
-      return `Last apply did not land in the lockfile — inspect with \`supplywarden why ${pkg}\`, then npm install`;
+      return `Last verify/apply did not stick — retry with \`supplywarden verify ${pkg}\``;
     case "PENDING_VERIFY":
       return `Override is in package.json but the lockfile is still old — run npm install, then \`supplywarden check\``;
     case "NEW":
@@ -372,6 +373,7 @@ export function classifyUntrackedOverride(cwd: string, entry: MetadataEntry): Ch
     chains,
     installedVersions: graph.versions,
     dependerRanges: graph.dependerRanges,
+    dependencyKind: graph.dependencyKind,
   };
 }
 

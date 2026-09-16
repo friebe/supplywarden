@@ -1,7 +1,9 @@
 import type { CheckEntry, ReportModel } from "../types.js";
 import { removableReasonLabel, sortCheckEntries } from "../check/classify.js";
 import { nextCommands, withReportCommands } from "./commands.js";
-import { nowIso } from "../util/time.js";
+import { formatDisplayDate, nowIso } from "../util/time.js";
+import { loadConfig } from "../config.js";
+import { dependencyKindLabel } from "../graph/npm.js";
 
 export function emptyReport(cwd: string, title: string): ReportModel {
   return {
@@ -23,7 +25,9 @@ function canRemove(e: CheckEntry): boolean {
 }
 
 export function toMarkdown(report: ReportModel): string {
+  const dateOpts = dateOptsFrom(report);
   const lines: string[] = [`# ${report.title}`, ""];
+  lines.push(`Generated: ${formatDisplayDate(report.generatedAt, dateOpts)}`, "");
   const summary = Object.entries(report.summary)
     .map(([k, v]) => `**${k}:** ${v}`)
     .join(" · ");
@@ -44,6 +48,9 @@ export function toMarkdown(report: ReportModel): string {
         );
       }
       lines.push("", `**forcedVersion:** ${group.forcedVersion ?? "—"}`, "");
+      if (group.dependencyKind && group.dependencyKind !== "production") {
+        lines.push(`**Tree:** ${group.dependencyKind} only`, "");
+      }
     }
   }
 
@@ -79,12 +86,18 @@ export function toMarkdown(report: ReportModel): string {
   }
 
   if (entries.length) {
-    lines.push("| Package | Status | Recommendation |", "|---------|--------|----------------|");
+    lines.push(
+      "| Package | Status | Scope | Recommendation | Review by |",
+      "|---------|--------|-------|----------------|-----------|",
+    );
     for (const e of entries) {
       const verify = e.verifyOutcome ? ` (${e.verifyOutcome})` : "";
+      const extra = dependencyKindLabel(e.dependencyKind);
+      const extraMark = extra ? ` · ${extra}` : "";
+      const scope = e.dependencyKind ?? "—";
       const cmd = (e.commands ?? nextCommands(e)).map((c) => `\`${c}\``).join(" · ");
       lines.push(
-        `| ${e.entry.package}@${e.entry.forcedVersion} | ${e.statuses.join(" + ")}${verify} | ${cmd || e.suggestedAction} |`,
+        `| ${e.entry.package}@${e.entry.forcedVersion}${extraMark} | ${e.statuses.join(" + ")}${verify} | ${scope} | ${cmd || e.suggestedAction} | ${formatDisplayDate(e.entry.reviewBy, dateOpts)} |`,
       );
     }
     lines.push("");
@@ -105,6 +118,9 @@ export function toMarkdown(report: ReportModel): string {
         );
       }
       lines.push(`- **Roots:** ${e.roots?.join(", ") || "—"}`);
+      if (e.dependencyKind && e.dependencyKind !== "production") {
+        lines.push(`- **Tree:** ${e.dependencyKind} only`);
+      }
       for (const chain of e.chains ?? []) {
         lines.push(`- ${chain}`);
       }
@@ -113,4 +129,12 @@ export function toMarkdown(report: ReportModel): string {
   }
 
   return lines.join("\n");
+}
+
+function dateOptsFrom(report: ReportModel): { dateLocale: "de" | "en"; timeZone: string } {
+  const config = report.cwd ? loadConfig(report.cwd) : undefined;
+  return {
+    dateLocale: report.dateLocale ?? config?.dateLocale ?? "de",
+    timeZone: report.timeZone ?? config?.timeZone ?? "Europe/Berlin",
+  };
 }

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DependencyChain, GraphAnalysis, RootPackage } from "../types.js";
+import type { DependencyChain, DependencyKind, GraphAnalysis, RootPackage } from "../types.js";
 
 type LockPackage = {
   version?: string;
@@ -8,6 +8,9 @@ type LockPackage = {
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  dev?: boolean;
+  optional?: boolean;
+  devOptional?: boolean;
 };
 
 type NpmLockfile = {
@@ -132,14 +135,82 @@ export function analyzeNpmGraph(cwd: string, pkgName: string): GraphAnalysis {
     });
   }
 
+  const roots = [...rootMap.values()];
   return {
     package: pkgName,
     versions,
     inTree: matches.length > 0,
-    roots: [...rootMap.values()],
+    roots,
     chains,
     dependerRanges,
+    dependencyKind: matches.length
+      ? inferDependencyKind({
+          pkgName,
+          copies: matches.map(([, meta]) => meta),
+          rootNames: roots.map((r) => r.name),
+          rootDependencies: root.dependencies,
+          rootDevDependencies: root.devDependencies,
+          rootOptionalDependencies: root.optionalDependencies,
+        })
+      : undefined,
   };
+}
+
+type LockFlags = {
+  dev?: boolean;
+  optional?: boolean;
+  devOptional?: boolean;
+};
+
+export function inferDependencyKind(opts: {
+  pkgName: string;
+  copies: LockFlags[];
+  rootNames: string[];
+  rootDependencies?: Record<string, string>;
+  rootDevDependencies?: Record<string, string>;
+  rootOptionalDependencies?: Record<string, string>;
+}): DependencyKind {
+  const prod = opts.rootDependencies ?? {};
+  const dev = opts.rootDevDependencies ?? {};
+  const opt = opts.rootOptionalDependencies ?? {};
+  const inProd = (name: string) => name in prod;
+  const inDev = (name: string) => name in dev;
+  const inOpt = (name: string) => name in opt;
+
+  if (inProd(opts.pkgName) || opts.rootNames.some(inProd)) return "production";
+
+  if (opts.copies.length) {
+    const allDev = opts.copies.every((c) => c.dev === true);
+    const allOpt = opts.copies.every((c) => c.optional === true || c.devOptional === true);
+    const anyUnflagged = opts.copies.some((c) => !c.dev && !c.optional && !c.devOptional);
+    if (allDev) return "development";
+    if (allOpt) return "optional";
+    if (anyUnflagged && (opts.rootNames.length === 0 || opts.rootNames.some(inProd))) {
+      return "production";
+    }
+  }
+
+  if (opts.rootNames.length > 0 && opts.rootNames.every(inOpt) && !opts.rootNames.some(inProd)) {
+    return "optional";
+  }
+  if (inDev(opts.pkgName) || (opts.rootNames.length > 0 && opts.rootNames.every(inDev))) {
+    return "development";
+  }
+  if (inOpt(opts.pkgName)) return "optional";
+  return "production";
+}
+
+export function dependencyKindLabel(kind?: DependencyKind): string {
+  if (kind === "development" || kind === "optional") return kind;
+  return "";
+}
+
+export function mergeDependencyKind(a?: DependencyKind, b?: DependencyKind): DependencyKind | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  if (a === "production" || b === "production") return "production";
+  if (a === b) return a;
+  return "production";
 }
 
 function stripAtVersion(segment: string): string {

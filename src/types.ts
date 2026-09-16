@@ -92,6 +92,8 @@ export type AuditConfig = {
   minSeverity: Severity;
 };
 
+export type DateLocale = "de" | "en";
+
 export type SupplywardenConfig = {
   upgradeRootThreshold: number;
   defaultReviewDays: number;
@@ -99,6 +101,9 @@ export type SupplywardenConfig = {
   impactWarnThreshold: number;
   impactBlockThreshold: number;
   audit: AuditConfig;
+  /** CLI/HTML date display. Metadata stays ISO. */
+  dateLocale: DateLocale;
+  timeZone: string;
 };
 
 export type RootPackage = {
@@ -106,6 +111,8 @@ export type RootPackage = {
   version: string;
   range?: string;
 };
+
+export type DependencyKind = "production" | "development" | "optional";
 
 export type DependencyChain = {
   path: string[];
@@ -121,6 +128,8 @@ export type GraphAnalysis = {
   chains: DependencyChain[];
   /** Parent lockfile specs for this package (what dependents asked for, not installed). */
   dependerRanges: string[];
+  /** Where this package sits in the install tree. Omitted if not in the lockfile. */
+  dependencyKind?: DependencyKind;
 };
 
 export type PackageAlertGroup = {
@@ -131,6 +140,8 @@ export type PackageAlertGroup = {
   maxSeverity: Severity;
   forcedVersion?: string;
   mergedVulnerableRange: string;
+  /** From Dependabot `dependency.scope` when present. */
+  dependencyKind?: DependencyKind;
 };
 
 export type Decision = {
@@ -167,6 +178,8 @@ export type CheckEntry = {
   chains?: string[];
   installedVersions?: string[];
   dependerRanges?: string[];
+  /** production | development | optional. Reports show all three in the Scope column. */
+  dependencyKind?: DependencyKind;
   /** Override spec still allows vulnerable versions — keeping it is a no-op. */
   weakOverride?: boolean;
   /** Live audit does not list this package. Parent specs are a hint, not a KEEP. */
@@ -186,6 +199,8 @@ export type ReportModel = {
   validation?: ValidationIssue[];
   impact?: ImpactDiff;
   markdown?: string;
+  dateLocale?: DateLocale;
+  timeZone?: string;
 };
 
 export type CommandResult = {

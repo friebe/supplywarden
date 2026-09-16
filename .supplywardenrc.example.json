@@ -4,6 +4,8 @@
   "metadataPath": "security-metadata.json",
   "impactWarnThreshold": 20,
   "impactBlockThreshold": 100,
+  "dateLocale": "de",
+  "timeZone": "Europe/Berlin",
   "audit": {
     "minSeverity": "high"
   }

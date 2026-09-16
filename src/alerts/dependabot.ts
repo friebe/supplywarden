@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { maxSatisfying, valid } from "semver";
-import type { Advisory, PackageAlertGroup, Severity } from "../types.js";
+import type { Advisory, DependencyKind, PackageAlertGroup, Severity } from "../types.js";
 
 export type DependabotAlert = {
   number?: number;
@@ -8,6 +8,8 @@ export type DependabotAlert = {
   dependency?: {
     package?: { name?: string; ecosystem?: string };
     manifest_path?: string;
+    /** GitHub Dependabot: "development" | "runtime" */
+    scope?: string;
   };
   security_advisory?: {
     ghsa_id?: string;
@@ -105,6 +107,14 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+export function dependabotScopeToKind(scope?: string): DependencyKind | undefined {
+  const raw = (scope ?? "").toLowerCase().trim();
+  if (raw === "development" || raw === "dev") return "development";
+  if (raw === "runtime" || raw === "production") return "production";
+  if (raw === "optional") return "optional";
+  return undefined;
+}
+
 export function groupAlerts(alerts: DependabotAlert[]): PackageAlertGroup[] {
   const map = new Map<string, PackageAlertGroup>();
   for (const alert of alerts) {
@@ -113,6 +123,7 @@ export function groupAlerts(alerts: DependabotAlert[]): PackageAlertGroup[] {
     const manifestPath = alert.dependency?.manifest_path ?? "package.json";
     const key = `${pkg}::${manifestPath}`;
     const advisory = alertToAdvisory(alert);
+    const kind = dependabotScopeToKind(alert.dependency?.scope);
     const existing = map.get(key);
     if (!existing) {
       map.set(key, {
@@ -122,6 +133,7 @@ export function groupAlerts(alerts: DependabotAlert[]): PackageAlertGroup[] {
         maxSeverity: advisory.severity,
         forcedVersion: advisory.patchedVersion,
         mergedVulnerableRange: advisory.vulnerableRange,
+        dependencyKind: kind,
       });
       continue;
     }
@@ -131,8 +143,17 @@ export function groupAlerts(alerts: DependabotAlert[]): PackageAlertGroup[] {
     existing.mergedVulnerableRange = existing.advisories
       .map((a) => a.vulnerableRange)
       .join(" || ");
+    existing.dependencyKind = mergeAlertKind(existing.dependencyKind, kind);
   }
   return [...map.values()];
+}
+
+function mergeAlertKind(a?: DependencyKind, b?: DependencyKind): DependencyKind | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  if (a === "production" || b === "production") return "production";
+  if (a === b) return a;
+  return "production";
 }
 
 export function alertsFromInput(input: DependabotAlert | DependabotAlert[]): DependabotAlert[] {

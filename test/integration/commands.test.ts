@@ -11,6 +11,7 @@ import { runSync } from "../../src/commands/sync.js";
 import { runVerify } from "../../src/commands/verify.js";
 import { createStaticInstall } from "../../src/install/client.js";
 import { renderHtml } from "../../src/report/html.js";
+import { toMarkdown } from "../../src/report/model.js";
 import { extractExistingOverrides, readPackageJson } from "../../src/metadata/sync.js";
 import { fixtureDir, withFixture } from "../helpers/fixture-project.js";
 import { FIXTURES_ROOT } from "../helpers/fixture-project.js";
@@ -60,13 +61,16 @@ describe("runCheck", () => {
     expect(byPkg.semver?.status).toBe("PENDING_VERIFY");
     expect(byPkg.tar?.status).toBe("VERIFY_FAILED");
     expect(byPkg.ws?.status).toBe("UNTRACKED");
+    expect(byPkg.picomatch?.status).toBe("OVERDUE");
+    expect(byPkg.picomatch?.dependencyKind).toBe("development");
+    expect(byPkg.qs?.dependencyKind).toBe("production");
     expect(byPkg.qs?.suggestedAction).toMatch(/supplywarden why qs/);
     expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden verify lodash --apply/);
     expect(byPkg.request?.suggestedAction).toMatch(/supplywarden verify request --apply/);
     expect(byPkg.minimist?.suggestedAction).toMatch(/supplywarden sync/);
     expect(byPkg.semver?.suggestedAction).toMatch(/npm install/);
-    expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden why tar/);
-    expect(byPkg.tar?.suggestedAction).not.toMatch(/supplywarden verify/);
+    expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden verify tar/);
+    expect(byPkg.tar?.suggestedAction).not.toMatch(/supplywarden why tar/);
     expect(byPkg.ws?.suggestedAction).toMatch(/supplywarden init/);
   });
 
@@ -196,6 +200,13 @@ describe("runWhy / analyze", () => {
     expect(result.exitCode).toBe(0);
     expect(result.report.summary.roots).toBeGreaterThanOrEqual(1);
     expect(result.messages.join("\n")).toMatch(/express/);
+  });
+
+  it("labels picomatch as development-only in npm-mixed", () => {
+    const result = runWhy({ cwd: fixtureDir("npm-mixed"), package: "picomatch" });
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(/Tree: development only/);
+    expect(result.messages.join("\n")).toMatch(/eslint/);
   });
 
   it("analyzes qs alert against npm-simple", async () => {
@@ -378,10 +389,21 @@ describe("doctor / html / sync", () => {
     expect(actions.some((a: string) => a.includes("supplywarden verify lodash --apply"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden verify request --apply"))).toBe(true);
     expect(actions.some((a: string) => a.includes("npm install"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("supplywarden why tar"))).toBe(true);
+    expect(actions.some((a: string) => a.includes("supplywarden verify tar"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden why qs"))).toBe(true);
+    expect(html).toMatch(/<th>Scope<\/th>/);
+    expect(html).toMatch(/function scopeBadge/);
+    const picomatch = data.entries.find((e: { entry: { package: string } }) => e.entry.package === "picomatch");
+    expect(picomatch?.dependencyKind).toBe("development");
+    const md = toMarkdown(result.report);
+    expect(md).toMatch(/\| Package \| Status \| Scope \|/);
+    expect(md).toMatch(/picomatch@4\.0\.4 · development \| OVERDUE \| development \|/);
+    expect(md).toMatch(/qs@6\.11\.2 \| OVERDUE \| production \|/);
     expect(actions.some((a: string) => a.includes("supplywarden sync"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden init"))).toBe(true);
+    expect(html).toMatch(/function advisoryLinks/);
+    expect(html).toMatch(/https:\/\/github.com\/advisories\//);
+    expect(JSON.stringify(picomatch)).toMatch(/GHSA-c2c7-rcm5-vvqj/);
   });
 
   it("sync restores drifted overrides", async () => {
@@ -449,6 +471,9 @@ describe("runVerify", () => {
       expect(result.exitCode).toBe(0);
       const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
       expect(meta.entries[0].status).toBe("resolved");
+      expect(meta.entries[0].resolvedAt).toBeTruthy();
+      expect(meta.entries[0].resolvedBy).toBeTruthy();
+      expect(meta.entries[0].resolution).toMatch(/^verify-confirmed:/);
       const pkg = readPackageJson(dir);
       expect(pkg.overrides).toBeUndefined();
     });

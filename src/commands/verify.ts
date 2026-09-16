@@ -242,7 +242,8 @@ export async function runVerify(opts: {
       if (entry) {
         entry.status = "resolved";
         entry.resolvedAt = nowIso();
-        entry.resolution = "verify-confirmed";
+        entry.resolvedBy = actorName();
+        entry.resolution = `verify-confirmed: ${item.removableReason ?? "probe-clear"}`;
       }
       deleteOverrideFromManifest(cwd, item.entry.package);
     }

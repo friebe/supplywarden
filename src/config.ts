@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SupplywardenConfig } from "./types.js";
+import { DEFAULT_TIME_ZONE, parseDateLocale, parseTimeZone } from "./util/time.js";
 
 export const CONFIG_FILENAME = ".supplywardenrc.json";
 export const LEGACY_CONFIG_FILENAME = ".vulnfixrc.json";
@@ -14,6 +15,8 @@ export const DEFAULT_CONFIG: SupplywardenConfig = {
   audit: {
     minSeverity: "high",
   },
+  dateLocale: "de",
+  timeZone: DEFAULT_TIME_ZONE,
 };
 
 export type ResolvedConfigFile = {
@@ -47,6 +50,8 @@ export function loadConfig(cwd: string): SupplywardenConfig {
       audit: {
         minSeverity: raw.audit?.minSeverity ?? DEFAULT_CONFIG.audit.minSeverity,
       },
+      dateLocale: parseDateLocale(raw.dateLocale ?? DEFAULT_CONFIG.dateLocale),
+      timeZone: parseTimeZone(raw.timeZone ?? DEFAULT_CONFIG.timeZone),
     };
   } catch {
     return defaults();

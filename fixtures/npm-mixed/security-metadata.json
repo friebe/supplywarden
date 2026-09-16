@@ -132,6 +132,32 @@
       "reviewReason": "re-run verify"
     },
     {
+      "id": "picomatch-dev-overdue",
+      "status": "active",
+      "package": "picomatch",
+      "forcedVersion": "4.0.4",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-c2c7-rcm5-vvqj",
+          "cveId": "CVE-2026-33671",
+          "severity": "high",
+          "vulnerableRange": ">=4.0.0 < 4.0.4",
+          "patchedVersion": "4.0.4"
+        }
+      ],
+      "reason": "eslint (devDependency) → picomatch@4.0.2 (ReDoS); development-only tree",
+      "strategy": "override",
+      "rootPackages": ["eslint"],
+      "dependencyChains": ["eslint@8.57.0 → picomatch@4.0.2"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2025-02-01T00:00:00.000Z",
+      "reviewReason": "Lockfile still on vulnerable picomatch; development-only"
+    },
+    {
       "id": "request-relic",
       "status": "active",
       "package": "request",

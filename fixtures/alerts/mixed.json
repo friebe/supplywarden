@@ -4,7 +4,8 @@
     "state": "open",
     "dependency": {
       "package": { "ecosystem": "npm", "name": "qs" },
-      "manifest_path": "package.json"
+      "manifest_path": "package.json",
+      "scope": "runtime"
     },
     "security_advisory": {
       "ghsa_id": "GHSA-hrpp-h998-j3pp",
@@ -18,11 +19,31 @@
     }
   },
   {
+    "number": 5,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "qs" },
+      "manifest_path": "package.json",
+      "scope": "development"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-hrpp-h998-j3pp",
+      "cve_id": "CVE-2022-24999",
+      "severity": "high",
+      "summary": "qs prototype pollution (also pulled in tests)"
+    },
+    "security_vulnerability": {
+      "vulnerable_version_range": "< 6.11.0",
+      "first_patched_version": { "identifier": "6.11.2" }
+    }
+  },
+  {
     "number": 2,
     "state": "open",
     "dependency": {
       "package": { "ecosystem": "npm", "name": "semver" },
-      "manifest_path": "package.json"
+      "manifest_path": "package.json",
+      "scope": "runtime"
     },
     "security_advisory": {
       "ghsa_id": "GHSA-c2qf-rxjj-qqgw",
@@ -40,7 +61,8 @@
     "state": "open",
     "dependency": {
       "package": { "ecosystem": "npm", "name": "minimist" },
-      "manifest_path": "package.json"
+      "manifest_path": "package.json",
+      "scope": "runtime"
     },
     "security_advisory": {
       "ghsa_id": "GHSA-xvch-5gv4-984h",
@@ -58,7 +80,8 @@
     "state": "open",
     "dependency": {
       "package": { "ecosystem": "npm", "name": "ws" },
-      "manifest_path": "package.json"
+      "manifest_path": "package.json",
+      "scope": "runtime"
     },
     "security_advisory": {
       "ghsa_id": "GHSA-3h5v-q93c-6h6q",
@@ -69,6 +92,25 @@
     "security_vulnerability": {
       "vulnerable_version_range": "< 8.17.1",
       "first_patched_version": { "identifier": "8.17.1" }
+    }
+  },
+  {
+    "number": 6,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "npm", "name": "picomatch" },
+      "manifest_path": "package.json",
+      "scope": "development"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-c2c7-rcm5-vvqj",
+      "cve_id": "CVE-2026-33671",
+      "severity": "high",
+      "summary": "picomatch ReDoS via extglob quantifiers"
+    },
+    "security_vulnerability": {
+      "vulnerable_version_range": ">=4.0.0 < 4.0.4",
+      "first_patched_version": { "identifier": "4.0.4" }
     }
   }
 ]

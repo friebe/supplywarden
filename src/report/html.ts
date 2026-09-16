@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ReportModel } from "../types.js";
 import { withReportCommands } from "./commands.js";
+import { loadConfig } from "../config.js";
+import { formatDisplayDate } from "../util/time.js";
 
 function templatePath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -16,9 +18,23 @@ export function renderHtml(report: ReportModel): string {
   } catch {
     template = FALLBACK_HTML;
   }
+  const config = loadConfig(report.cwd || ".");
+  const dateOpts = {
+    dateLocale: report.dateLocale ?? config.dateLocale,
+    timeZone: report.timeZone ?? config.timeZone,
+  };
   const normalized: ReportModel = {
     ...report,
-    entries: report.entries.map(withReportCommands),
+    dateLocale: dateOpts.dateLocale,
+    timeZone: dateOpts.timeZone,
+    generatedAt: formatDisplayDate(report.generatedAt, dateOpts),
+    entries: report.entries.map((e) => {
+      const next = withReportCommands(e);
+      return {
+        ...next,
+        entry: { ...next.entry, reviewBy: formatDisplayDate(next.entry.reviewBy, dateOpts) },
+      };
+    }),
   };
   const json = JSON.stringify(normalized).replace(/</g, "\\u003c");
   return template.replace("<!--SUPPLYWARDEN_DATA-->", json);
@@ -55,11 +71,17 @@ const FALLBACK_HTML = `<!DOCTYPE html>
     .REMOVABLE, .RESOLVED, .CONFIRMED_REMOVABLE { background: #163627; color: var(--ok); }
     .OVERDUE, .STALE, .DRIFT, .KEEP, .UNTRACKED { background: #3a2e12; color: var(--warn); }
     .NEW, .VERIFY_FAILED { background: #3a1515; color: var(--bad); }
+    .development { background: #16344f; color: #7ec8ff; }
+    .optional { background: #2a2438; color: #c4b5fd; }
+    .production { background: #1a222c; color: var(--muted); border: 1px solid #2a3542; }
     input { background: #0f1419; color: var(--fg); border: 1px solid #2a3542; border-radius: 8px; padding: 8px 10px; margin-bottom: 16px; width: 280px; }
     .detail { white-space: pre-wrap; color: var(--muted); font-size: 12px; }
     details { margin-top: 6px; }
     summary { cursor: pointer; color: var(--accent); font-size: 12px; }
     .chain { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); margin: 2px 0; }
+    .advisories { margin-top: 6px; font-size: 12px; }
+    .advisories a { color: var(--accent); text-decoration: none; margin-right: 10px; }
+    .advisories a:hover { text-decoration: underline; }
     code { font-family: ui-monospace, monospace; font-size: 12px; background: #0f1419; padding: 1px 6px; border-radius: 4px; color: var(--accent); white-space: nowrap; }
   </style>
 </head>
@@ -73,7 +95,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
     <div id="removable"></div>
     <input id="filter" placeholder="Filter package / status"/>
     <table>
-      <thead><tr><th>Package</th><th>Status</th><th>Action</th><th>ReviewBy</th></tr></thead>
+      <thead><tr><th>Package</th><th>Status</th><th>Scope</th><th>Action</th><th>ReviewBy</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </main>
@@ -105,7 +127,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
       }
       if (st.includes('DRIFT')) return ['supplywarden sync'];
       if (st.includes('PENDING_VERIFY')) return ['npm install'];
-      if (st.includes('VERIFY_FAILED') || e.verifyOutcome === 'VERIFY_FAILED') return ['supplywarden why ' + pkg];
+      if (st.includes('VERIFY_FAILED') || e.verifyOutcome === 'VERIFY_FAILED') return ['supplywarden verify ' + pkg];
       if (e.verifyOutcome === 'KEEP') {
         if (e.weakOverride) return ['supplywarden fix --apply'];
         return ['supplywarden why ' + pkg];
@@ -170,39 +192,74 @@ const FALLBACK_HTML = `<!DOCTYPE html>
       panel.className = 'panel';
       let html = '<h2>Safe to remove</h2><table><thead><tr><th>Package</th><th>Reason</th><th>Action</th><th>GHSA</th></tr></thead><tbody>';
       for (const e of removable) {
-        const ghsa = (e.entry.advisories || []).map((a) => a.ghsaId).filter(Boolean).join(', ') || '—';
         html += '<tr><td><strong>' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</strong></td>' +
           '<td>' + esc(REASON[e.removableReason] || '—') + '</td>' +
           '<td>' + actionCell(e) + '</td>' +
-          '<td>' + esc(ghsa) + '</td></tr>';
+          '<td>' + (advisoryLinks(e) || '—') + '</td></tr>';
       }
       html += '</tbody></table>';
       panel.innerHTML = html;
+    }
+    function advisoryLinks(e) {
+      const seen = new Set();
+      const parts = [];
+      for (const a of (e.entry && e.entry.advisories) || []) {
+        const ghsa = String(a.ghsaId || '').match(/GHSA-[0-9a-z-]+/i);
+        if (ghsa && !seen.has(ghsa[0].toUpperCase())) {
+          seen.add(ghsa[0].toUpperCase());
+          parts.push('<a href="https://github.com/advisories/' + esc(ghsa[0]) + '" target="_blank" rel="noopener noreferrer">' + esc(ghsa[0]) + '</a>');
+        }
+        const cve = String(a.cveId || '').match(/CVE-[0-9]{4}-[0-9]+/i);
+        if (cve && !seen.has(cve[0].toUpperCase())) {
+          seen.add(cve[0].toUpperCase());
+          parts.push('<a href="https://nvd.nist.gov/vuln/detail/' + esc(cve[0]) + '" target="_blank" rel="noopener noreferrer">' + esc(cve[0]) + '</a>');
+        }
+      }
+      return parts.length ? '<div class="advisories">' + parts.join(' ') + '</div>' : '';
+    }
+    function scopeBadge(kind) {
+      if (!kind) return '—';
+      return '<span class="badge ' + esc(kind) + '">' + esc(kind) + '</span>';
     }
     function graphBlock(e) {
       const roots = e.roots || e.entry.rootPackages || [];
       const chains = e.chains || e.entry.dependencyChains || [];
       const versions = e.installedVersions || [];
-      if (!roots.length && !chains.length && !versions.length) return '';
+      if (!roots.length && !chains.length && !versions.length && !e.dependencyKind) return '';
+      let visible = '';
+      if (e.dependencyKind === 'development' || e.dependencyKind === 'optional') {
+        visible += '<div class="chain">Tree: ' + esc(e.dependencyKind) + ' only</div>';
+      }
       let body = '';
       if (versions.length) body += '<div class="chain">Lockfile: ' + esc(versions.join(', ')) + ' (forced: ' + esc(e.entry.forcedVersion) + ')</div>';
       const ranges = e.dependerRanges || [];
       if (ranges.length) body += '<div class="chain">Dependents asked for (lockfile specs, not installed): ' + esc(ranges.join(', ')) + '</div>';
       if (roots.length) body += '<div class="chain">Roots: ' + esc(roots.join(', ')) + '</div>';
+      if (e.dependencyKind && e.dependencyKind !== 'production') {
+        body += '<div class="chain">Tree: ' + esc(e.dependencyKind) + ' only</div>';
+      }
       for (const c of chains) body += '<div class="chain">' + esc(c) + '</div>';
-      return '<details><summary>Roots &amp; dependency chains</summary>' + body + '</details>';
+      const details = body
+        ? '<details><summary>Roots &amp; dependency chains</summary>' + body + '</details>'
+        : '';
+      return visible + details;
     }
     function render(filter) {
       const tbody = document.getElementById('rows');
       tbody.innerHTML = '';
       for (const e of sorted) {
-        const hay = (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '')).toLowerCase();
+        const ghsaHay = ((e.entry.advisories || []).map((a) => (a.ghsaId || '') + ' ' + (a.cveId || '')).join(' '));
+        const hay = (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '') + ' ' + (e.dependencyKind || '') + ' ' + ghsaHay).toLowerCase();
         if (filter && !hay.includes(filter)) continue;
         const tr = document.createElement('tr');
         const st = (e.statuses || [e.status]).join(' + ');
         const outcome = e.verifyOutcome ? ' <span class="badge ' + esc(e.verifyOutcome) + '">' + esc(e.verifyOutcome) + '</span>' : '';
-        tr.innerHTML = '<td><strong>' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</strong><div class="detail">' + esc(e.entry.reason || '') + '</div>' + graphBlock(e) + '</td>' +
+        const pkgKind = (e.dependencyKind === 'development' || e.dependencyKind === 'optional')
+          ? ' ' + scopeBadge(e.dependencyKind)
+          : '';
+        tr.innerHTML = '<td><strong>' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</strong>' + pkgKind + advisoryLinks(e) + '<div class="detail">' + esc(e.entry.reason || '') + '</div>' + graphBlock(e) + '</td>' +
           '<td><span class="badge ' + esc(e.status) + '">' + esc(st) + '</span>' + outcome + '</td>' +
+          '<td>' + scopeBadge(e.dependencyKind) + '</td>' +
           '<td>' + actionCell(e) + '</td>' +
           '<td>' + esc(e.entry.reviewBy || '') + '</td>';
         tbody.appendChild(tr);
