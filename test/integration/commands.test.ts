@@ -391,6 +391,8 @@ describe("doctor / html / sync", () => {
     expect(actions.some((a: string) => a.includes("npm install"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden verify tar"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden why qs"))).toBe(true);
+    expect(html).toMatch(/Decide this week/);
+    expect(html).toMatch(/<th>Severity<\/th>/);
     expect(html).toMatch(/<th>Scope<\/th>/);
     expect(html).toMatch(/function scopeBadge/);
     const picomatch = data.entries.find((e: { entry: { package: string } }) => e.entry.package === "picomatch");

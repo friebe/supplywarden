@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>supplywarden</title>
+  <style>
+    :root {
+      --bg: #f7f7f5;
+      --paper: #fff;
+      --ink: #2c2c2a;
+      --muted: #73736e;
+      --line: #e8e8e4;
+      --link: #3d5a4c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    header, main { max-width: 1080px; padding: 0 28px; }
+    header { padding-top: 36px; padding-bottom: 8px; }
+    h1 { margin: 0; font-size: 18px; font-weight: 550; }
+    .meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    main { padding-top: 20px; padding-bottom: 72px; }
+    .tally {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 16px;
+    }
+    .tally button {
+      background: none;
+      border: 0;
+      padding: 0;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      text-decoration-color: transparent;
+    }
+    .tally button:hover, .tally button.on { color: var(--ink); text-decoration-color: currentColor; }
+    .toolbar { display: flex; gap: 16px; align-items: baseline; margin-bottom: 28px; flex-wrap: wrap; }
+    .chip {
+      background: none;
+      border: 0;
+      padding: 0;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .chip.on { color: var(--ink); }
+    input[type="search"] {
+      margin-left: auto;
+      background: transparent;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      padding: 4px 0;
+      min-width: 180px;
+      font: inherit;
+      font-size: 13px;
+      color: var(--ink);
+    }
+    input[type="search"]:focus { outline: none; border-bottom-color: var(--ink); }
+    .section { margin-bottom: 36px; }
+    .section h2 {
+      font-size: 14px;
+      font-weight: 550;
+      margin: 0 0 10px;
+      color: var(--ink);
+    }
+    .section h2 em { font-style: normal; font-weight: 400; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      text-align: left;
+      padding: 12px 16px 12px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 450; font-size: 12px; }
+    tr:last-child td { border-bottom: 0; }
+    .pkg { font-weight: 550; color: var(--ink); }
+    .status { font-weight: 550; color: var(--ink); white-space: nowrap; }
+    .status .more { font-weight: 400; color: var(--muted); }
+    .sev-high, .sev-critical { color: var(--ink); font-weight: 550; }
+    .quiet { color: var(--muted); font-size: 13px; }
+    .tally strong { color: var(--ink); font-weight: 550; }
+    .advisories { margin-top: 2px; font-size: 12px; }
+    .advisories a { color: var(--link); text-decoration: none; margin-right: 8px; }
+    .advisories a:hover { text-decoration: underline; }
+    details { margin-top: 4px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    .chain { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); margin: 2px 0; }
+    code {
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--muted);
+    }
+    .copy {
+      background: none;
+      border: 0;
+      padding: 0 0 0 8px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .copy:hover { color: var(--ink); }
+    .empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
+    .badge { font-size: 13px; color: var(--muted); }
+    .development, .optional { color: var(--ink); }
+    @media (max-width: 800px) {
+      header, main { padding-left: 16px; padding-right: 16px; }
+      .hide-sm { display: none; }
+    }
+    @media print {
+      body { background: #fff; }
+      .toolbar, .copy { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">supplywarden</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+  <main>
+    <p class="tally" id="cards"></p>
+    <div class="toolbar">
+      <button type="button" class="chip on" data-chip="all">All</button>
+      <button type="button" class="chip" data-chip="decide">Decide this week</button>
+      <button type="button" class="chip" data-chip="development">Development</button>
+      <button type="button" class="chip" data-chip="cleanup">Cleanup</button>
+      <button type="button" class="chip" data-chip="waiting">Waiting</button>
+      <input id="filter" type="search" placeholder="Filter…"/>
+    </div>
+    <div id="sections"></div>
+  </main>
+  <script type="application/json" id="supplywarden-data"><!--SUPPLYWARDEN_DATA--></script>
+  <script>
+    const REASON = {
+      'not-in-tree': 'No longer in the lockfile',
+      'no-vulnerable-version': 'No vulnerable version left in the tree',
+      'already-at-patched': 'package.json already depends on the patched version — override is leftover',
+      'root-upgrade-candidate': 'Lockfile shows only the forced version because the override is holding it — not leftover',
+      'audit-clear': 'Live audit no longer lists this package'
+    };
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function nextCommands(e) {
+      if (e.commands && e.commands.length) return e.commands;
+      const pkg = (e.entry && e.entry.package) || '';
+      const st = e.statuses && e.statuses.length ? e.statuses : [e.status];
+      if (st.includes('NEW')) return ['supplywarden fix --apply'];
+      if (e.weakOverride && !e.auditClear) return ['supplywarden fix --apply'];
+      if (st.includes('UNTRACKED')) {
+        const cmds = ['supplywarden init'];
+        if (st.includes('REMOVABLE') || st.includes('RESOLVED')) cmds.push('supplywarden verify ' + pkg + ' --apply');
+        return cmds;
+      }
+      if (st.includes('DRIFT')) return ['supplywarden sync'];
+      if (st.includes('PENDING_VERIFY')) return ['npm install'];
+      if (st.includes('VERIFY_FAILED') || e.verifyOutcome === 'VERIFY_FAILED') return ['supplywarden verify ' + pkg];
+      if (e.verifyOutcome === 'KEEP') {
+        if (e.weakOverride) return ['supplywarden fix --apply'];
+        return ['supplywarden why ' + pkg];
+      }
+      if (e.verifyOutcome === 'CONFIRMED_REMOVABLE') return ['supplywarden verify ' + pkg + ' --apply'];
+      if (st.includes('REMOVABLE') || st.includes('RESOLVED')) {
+        return ['supplywarden verify ' + pkg + ' --apply'];
+      }
+      if (e.auditClear) return ['supplywarden verify ' + pkg];
+      if (e.weakOverride) return ['supplywarden fix --apply'];
+      if (st.includes('OVERDUE') || st.includes('STALE')) return ['supplywarden why ' + pkg];
+      return pkg ? ['supplywarden verify ' + pkg] : [];
+    }
+    function actionCell(e) {
+      return nextCommands(e).map((c) =>
+        '<code>' + esc(c) + '</code><button type="button" class="copy" data-copy="' + esc(c) + '">copy</button>'
+      ).join('<br/>');
+    }
+    function canRemove(e) {
+      if (e.verifyOutcome === 'KEEP' || e.verifyOutcome === 'VERIFY_FAILED') return false;
+      return (e.statuses || []).includes('REMOVABLE') || (e.statuses || []).includes('RESOLVED');
+    }
+    function statusesOf(e) {
+      return e.statuses && e.statuses.length ? e.statuses : [e.status];
+    }
+    function bucket(e) {
+      const st = statusesOf(e);
+      if (st.includes('NEW') || st.includes('OVERDUE') || st.includes('VERIFY_FAILED') || st.includes('DRIFT') || st.includes('UNTRACKED')) return 'decide';
+      if (st.includes('PENDING_VERIFY')) return 'waiting';
+      if (canRemove(e)) return 'cleanup';
+      return 'other';
+    }
+    function actionRank(e) {
+      const st = statusesOf(e);
+      if (e.status === 'NEW' || st.includes('NEW')) return 0;
+      if (e.status === 'VERIFY_FAILED' || st.includes('VERIFY_FAILED')) return 1;
+      if (e.status === 'OVERDUE' || st.includes('OVERDUE')) return 2;
+      if (e.status === 'DRIFT' || st.includes('DRIFT')) return 3;
+      if (st.includes('UNTRACKED')) return 4;
+      if (st.includes('REMOVABLE') || st.includes('RESOLVED')) return 5;
+      if (st.includes('PENDING_VERIFY')) return 6;
+      return 7;
+    }
+    function maxSeverity(e) {
+      const rank = { critical: 4, high: 3, medium: 2, low: 1, unknown: 0 };
+      let best = 'unknown';
+      for (const a of (e.entry && e.entry.advisories) || []) {
+        const s = a.severity || 'unknown';
+        if ((rank[s] || 0) > (rank[best] || 0)) best = s;
+      }
+      return best;
+    }
+    function advisoryLinks(e) {
+      const seen = new Set();
+      const parts = [];
+      for (const a of (e.entry && e.entry.advisories) || []) {
+        const ghsa = String(a.ghsaId || '').match(/GHSA-[0-9a-z-]+/i);
+        if (ghsa && !seen.has(ghsa[0].toUpperCase())) {
+          seen.add(ghsa[0].toUpperCase());
+          parts.push('<a href="https://github.com/advisories/' + esc(ghsa[0]) + '" target="_blank" rel="noopener noreferrer">' + esc(ghsa[0]) + '</a>');
+        }
+      }
+      return parts.length ? '<div class="advisories">' + parts.join(' ') + '</div>' : '';
+    }
+    function scopeBadge(kind) {
+      if (kind === 'development' || kind === 'optional') {
+        return '<span class="badge ' + esc(kind) + '">' + esc(kind) + '</span>';
+      }
+      return '<span class="quiet">—</span>';
+    }
+    function graphBlock(e) {
+      const roots = e.roots || e.entry.rootPackages || [];
+      const chains = e.chains || e.entry.dependencyChains || [];
+      const versions = e.installedVersions || [];
+      if (!roots.length && !chains.length && !versions.length) return '';
+      let body = '';
+      if (versions.length) body += '<div class="chain">Lockfile: ' + esc(versions.join(', ')) + ' (forced: ' + esc(e.entry.forcedVersion) + ')</div>';
+      const ranges = e.dependerRanges || [];
+      if (ranges.length) body += '<div class="chain">Dependents asked for: ' + esc(ranges.join(', ')) + '</div>';
+      if (roots.length) body += '<div class="chain">Roots: ' + esc(roots.join(', ')) + '</div>';
+      for (const c of chains) body += '<div class="chain">' + esc(c) + '</div>';
+      return '<details><summary>Chains</summary>' + body + '</details>';
+    }
+    function haystack(e) {
+      const ghsaHay = ((e.entry.advisories || []).map((a) => (a.ghsaId || '') + ' ' + (a.cveId || '')).join(' '));
+      return (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '') + ' ' + (e.dependencyKind || '') + ' ' + ghsaHay).toLowerCase();
+    }
+    function statusLabel(e) {
+      const names = {
+        NEW: 'New',
+        OVERDUE: 'Overdue',
+        VERIFY_FAILED: 'Verify failed',
+        DRIFT: 'Drift',
+        UNTRACKED: 'Untracked',
+        PENDING_VERIFY: 'Pending install',
+        REMOVABLE: 'Removable',
+        RESOLVED: 'Resolved',
+        OK: 'Ok',
+        STALE: 'Stale'
+      };
+      const st = statusesOf(e);
+      const primary = names[e.status] || names[st[0]] || e.status;
+      const extra = st.filter((s) => s !== e.status && s !== st[0]).map((s) => names[s] || s);
+      return '<span class="status">' + esc(primary) +
+        (extra.length ? ' <span class="more">· ' + esc(extra.join(' · ')) + '</span>' : '') +
+        '</span>';
+    }
+    function row(e) {
+      const sev = maxSeverity(e);
+      const hint = e.removableReason ? '<div class="quiet">' + esc(REASON[e.removableReason] || '') + '</div>' : '';
+      const sevClass = (sev === 'high' || sev === 'critical') ? 'sev-' + sev : 'quiet';
+      return '<tr><td>' + statusLabel(e) + '</td>' +
+        '<td><div class="pkg">' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</div>' + advisoryLinks(e) + hint + graphBlock(e) + '</td>' +
+        '<td class="' + sevClass + '">' + esc(sev === 'unknown' ? '—' : sev) + '</td>' +
+        '<td>' + scopeBadge(e.dependencyKind) + '</td>' +
+        '<td>' + actionCell(e) + '</td>' +
+        '<td class="quiet hide-sm">' + esc(e.entry.reviewBy || '') + '</td></tr>';
+    }
+    const HEAD = '<thead><tr><th>Status</th><th>Package</th><th>Severity</th><th>Scope</th><th>Next step</th><th class="hide-sm">Review by</th></tr></thead>';
+    const report = JSON.parse(document.getElementById('supplywarden-data').textContent || '{}');
+    document.getElementById('title').textContent = report.title || 'supplywarden';
+    document.getElementById('meta').textContent = (report.cwd || '') + ' · ' + (report.generatedAt || '');
+    const sorted = (report.entries || []).slice().sort((a, b) => {
+      const d = actionRank(a) - actionRank(b);
+      if (d !== 0) return d;
+      return String(a.entry.package).localeCompare(String(b.entry.package));
+    });
+    const decide = sorted.filter((e) => bucket(e) === 'decide');
+    const waiting = sorted.filter((e) => bucket(e) === 'waiting');
+    const cleanup = sorted.filter((e) => bucket(e) === 'cleanup');
+    const devOnly = sorted.filter((e) => e.dependencyKind === 'development');
+    const tally = [
+      { chip: 'decide', n: decide.length, label: 'to decide' },
+      { chip: 'cleanup', n: cleanup.length, label: 'safe to remove' },
+      { chip: 'waiting', n: waiting.length, label: 'waiting' },
+      { chip: 'development', n: devOnly.length, label: 'development' }
+    ].filter((c) => c.n > 0);
+    const cards = document.getElementById('cards');
+    cards.innerHTML = tally.length
+      ? tally.map((c) => '<button type="button" data-chip="' + c.chip + '"><strong>' + c.n + '</strong> ' + esc(c.label) + '</button>').join('<span> · </span>')
+      : 'Nothing to triage.';
+    let chip = 'all';
+    let query = '';
+    function visible(e) {
+      if (chip === 'decide' && bucket(e) !== 'decide') return false;
+      if (chip === 'cleanup' && bucket(e) !== 'cleanup') return false;
+      if (chip === 'waiting' && bucket(e) !== 'waiting') return false;
+      if (chip === 'development' && e.dependencyKind !== 'development') return false;
+      if (query && !haystack(e).includes(query)) return false;
+      return true;
+    }
+    function table(rows) {
+      if (!rows.length) return '<div class="empty">Nothing in this queue.</div>';
+      return '<table>' + HEAD + '<tbody>' + rows.map(row).join('') + '</tbody></table>';
+    }
+    function render() {
+      const sections = [
+        { title: 'Decide this week', items: decide },
+        { title: 'Waiting on install', items: waiting },
+        { title: 'Safe to remove', items: cleanup }
+      ];
+      let html = '';
+      for (const s of sections) {
+        const items = s.items.filter(visible);
+        if (!items.length) continue;
+        html += '<section class="section"><h2>' + esc(s.title) + ' <em>' + items.length + '</em></h2>' + table(items) + '</section>';
+      }
+      if (!html) html = '<div class="empty">No rows match this filter.</div>';
+      document.getElementById('sections').innerHTML = html;
+    }
+    function setChip(next) {
+      chip = next;
+      document.querySelectorAll('.chip').forEach((el) => el.classList.toggle('on', el.dataset.chip === chip));
+      document.querySelectorAll('.tally button').forEach((el) => el.classList.toggle('on', el.dataset.chip === chip));
+      render();
+    }
+    document.querySelectorAll('.chip').forEach((el) => el.addEventListener('click', () => setChip(el.dataset.chip)));
+    cards.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button');
+      if (btn && btn.dataset.chip) setChip(btn.dataset.chip);
+    });
+    document.getElementById('filter').addEventListener('input', (ev) => {
+      query = ev.target.value.toLowerCase();
+      render();
+    });
+    document.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.copy');
+      if (!btn) return;
+      navigator.clipboard.writeText(btn.getAttribute('data-copy') || '').then(() => {
+        btn.textContent = 'copied';
+        setTimeout(() => { btn.textContent = 'copy'; }, 1200);
+      }).catch(() => undefined);
+    });
+    render();
+  </script>
+</body>
+</html>
