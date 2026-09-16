@@ -46,6 +46,12 @@ npx supplywarden sync                 # metadata → package.json if someone edi
 
 `fix --apply` is not the everyday button. Everyday is `check`. Use `fix` only when you want those NEW rows in the tree. Use `verify <pkg>` to test dropping one override; `verify --apply` without a package name only touches leftovers `check` already marked REMOVABLE.
 
+## Do not ship `security-metadata.json`
+
+`security-metadata.json` (and the HTML from `check --open`) is a **team triage board**, not a production artifact. It records package names, GHSA/CVE IDs, forced versions, and dependency chains — a precise map of known weaknesses.
+
+Do not copy it into Docker images, static hosting, public web roots, or any build that outsiders can read. If it is publicly readable, it is an attack source: it tells an adversary exactly where the tree is weak. Keep it in the repo for `check` / CI, and keep HTML reports local.
+
 ## `--strict`
 
 Without `--strict`, `check` always exits 0: it prints the report, CI stays green.
