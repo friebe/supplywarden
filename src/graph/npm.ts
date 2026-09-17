@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DependencyChain, DependencyKind, GraphAnalysis, RootPackage } from "../types.js";
+import type { DependencyChain, DependencyKind, GraphAnalysis, PackageManager, RootPackage } from "../types.js";
 
 type LockPackage = {
   version?: string;
@@ -247,13 +247,19 @@ export function resolvedVersion(cwd: string, pkgName: string): string | undefine
   return analyzeNpmGraph(cwd, pkgName).versions[0];
 }
 
-export function detectPackageManager(cwd: string): "npm" | "pnpm" | "yarn" | "unknown" {
+export function detectPackageManager(cwd: string): PackageManager | "unknown" {
   const fromField = packageManagerFromManifest(cwd);
   if (fromField) return fromField;
   if (existsSync(join(cwd, "pnpm-lock.yaml"))) return "pnpm";
   if (existsSync(join(cwd, "yarn.lock"))) return "yarn";
   if (existsSync(join(cwd, "package-lock.json"))) return "npm";
   return "unknown";
+}
+
+/** Lockfile/manifest PM, or npm if none is detected. */
+export function resolvePackageManager(cwd: string): PackageManager {
+  const detected = detectPackageManager(cwd);
+  return detected === "unknown" ? "npm" : detected;
 }
 
 function packageManagerFromManifest(cwd: string): "npm" | "pnpm" | "yarn" | undefined {
