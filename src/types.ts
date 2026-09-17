@@ -248,4 +248,5 @@ export type AuditClient = {
 
 export type InstallClient = {
   install: (cwd: string) => Promise<{ ok: boolean; error?: string }>;
+  runCommand?: (cwd: string, file: string, args: string[]) => Promise<{ ok: boolean; error?: string }>;
 };

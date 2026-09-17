@@ -19,6 +19,7 @@ import {
 import { importOverridesFromPackageJson } from "../metadata/import.js";
 import { analyzeNpmGraph, dependencyKindLabel, mergeDependencyKind, resolvePackageManager } from "../graph/npm.js";
 import { createLiveRegistry } from "../registry/verify.js";
+import { isNxPackage } from "../fix/upgrade-command.js";
 import type {
   AuditClient,
   CheckEntry,
@@ -203,6 +204,11 @@ function newFindingAction(
     const targets = (decision.upgradeTargets ?? [])
       .map((t) => formatUpgradeTarget(t))
       .join(", ");
+    const nx = decision.upgradeTargets?.find((t) => isNxPackage(t.name));
+    if (nx) {
+      const spec = nx.to ? `nx@${nx.to}` : "latest";
+      return `New ${sev}: UPGRADE ${targets || roots.join(", ") || group.package} — run \`supplywarden fix --apply\` (starts \`npx nx migrate ${spec}\`)`;
+    }
     return `New ${sev}: UPGRADE ${targets || roots.join(", ") || group.package} — run \`supplywarden fix --apply\``;
   }
   const ver = decision.forcedVersion ?? group.forcedVersion;

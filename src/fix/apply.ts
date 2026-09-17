@@ -3,11 +3,13 @@ import { assessImpact, estimateImpact } from "../validation/impact-diff.js";
 import { blockingIssues, runPreApplyGate } from "../validation/override-gate.js";
 import { runPostVerify } from "../validation/post-verify.js";
 import { readMetadata, writeMetadata, newEntryId } from "../metadata/store.js";
-import { syncOverridesToPackageJson, readPackageJson, writePackageJson } from "../metadata/sync.js";
+import { syncOverridesToPackageJson } from "../metadata/sync.js";
 import { resolvePackageManager } from "../graph/npm.js";
 import { addDaysIso, nowIso } from "../util/time.js";
-import { restoreFiles, snapshotFiles } from "../util/snapshot.js";
+import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { actorName } from "../config.js";
+import { createLiveInstall } from "../install/client.js";
+import { rootUpgradeCommand } from "./upgrade-command.js";
 import type {
   AuditClient,
   CommandResult,
@@ -73,6 +75,10 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   const blocked = blockingIssues(issues);
   const report = baseReport(opts, issues, "Pre-apply validation", { impact });
 
+  if (decision.strategy === "upgrade") {
+    return applyRootUpgrade(opts, { messages, blocked, report, impact });
+  }
+
   if (!opts.apply) {
     messages.push("Dry-run: pass --apply to write package.json and security-metadata.json");
     return { exitCode: blocked.length ? 1 : 0, report, messages };
@@ -118,15 +124,6 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     reviewReason: "Verify whether a root-package upgrade can replace this override",
     needsReview: false,
   };
-
-  if (decision.strategy === "upgrade" && decision.upgradeTargets?.length) {
-    bumpRootPackages(cwd, decision.upgradeTargets, group.manifestPath);
-    messages.push(
-      `Root packages bumped: ${decision.upgradeTargets
-        .map((t) => (t.to ? `${t.name}@${t.from ?? "?"} → ${t.to}` : t.name))
-        .join(", ")}`,
-    );
-  }
 
   const { metadata: next } = dedupeOrSupersede(metadata, entry);
   writeMetadata(cwd, config, next);
@@ -211,27 +208,115 @@ function persistApplyVerifyFailed(
   }
 }
 
-function bumpRootPackages(
-  cwd: string,
-  targets: Array<{ name: string; from?: string; to?: string }>,
-  manifestPath: string,
-): void {
-  const pkg = readPackageJson(cwd, manifestPath);
-  const bags = [
-    pkg.dependencies as Record<string, string> | undefined,
-    pkg.devDependencies as Record<string, string> | undefined,
-    pkg.optionalDependencies as Record<string, string> | undefined,
-  ];
-  for (const t of targets) {
-    if (!t.to) continue;
-    for (const bag of bags) {
-      if (!bag || !(t.name in bag)) continue;
-      const current = bag[t.name] ?? "";
-      const prefix = current.startsWith("~") ? "~" : "^";
-      bag[t.name] = `${prefix}${t.to}`;
-    }
+async function applyRootUpgrade(
+  opts: ApplyOptions,
+  ctx: {
+    messages: string[];
+    blocked: import("../types.js").ValidationIssue[];
+    report: ReportModel;
+    impact: import("../types.js").ImpactDiff;
+  },
+): Promise<CommandResult> {
+  const { cwd, config, group, decision } = opts;
+  const { messages, blocked, report, impact } = ctx;
+  const pm = resolvePackageManager(cwd);
+  const command = rootUpgradeCommand(pm, decision.upgradeTargets ?? []);
+
+  if (impact.warning) {
+    messages.push(
+      `Impact: ${impact.changedPackages} packages (≥ warn threshold ${config.impactWarnThreshold})`,
+    );
   }
-  writePackageJson(cwd, pkg, manifestPath);
+  if (command) {
+    messages.push(`Package manager: ${command.display}`);
+  }
+
+  if (!opts.apply) {
+    messages.push(
+      command?.kind === "nx"
+        ? "Dry-run: pass --apply to start Nx migrate (Nx asks which packages to update)"
+        : "Dry-run: pass --apply to run the package-manager upgrade (package.json is not edited here)",
+    );
+    return { exitCode: blocked.length ? 1 : 0, report, messages };
+  }
+
+  if (blocked.length) {
+    return {
+      exitCode: 1,
+      report: { ...report, title: `ABGELEHNT: ${blocked[0]!.code}` },
+      messages: [
+        `Not installing — ${blocked[0]!.code}`,
+        ...blocked.map((i) => (i.hint ? `${i.message} (${i.hint})` : i.message)),
+        ...messages,
+      ],
+    };
+  }
+
+  if (!command) {
+    messages.push("No upgrade version resolved — not writing package.json");
+    return { exitCode: 1, report: { ...report, title: "No upgrade version" }, messages };
+  }
+
+  if (opts.skipInstall) {
+    messages.push(`Not writing package.json — run \`${command.display}\``);
+    return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
+  }
+
+  const install = opts.install ?? createLiveInstall();
+  if (!install.runCommand) {
+    messages.push(`Not writing package.json — run \`${command.display}\``);
+    return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
+  }
+
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, group.manifestPath]);
+  const installed = await install.runCommand(cwd, command.file, command.args);
+  if (!installed.ok) {
+    restoreFiles(cwd, snap);
+    messages.push(installed.error ?? `${command.display} failed`);
+    return {
+      exitCode: 1,
+      report: { ...report, title: "VERIFY_FAILED peer conflict" },
+      messages,
+    };
+  }
+
+  if (command.kind === "nx") {
+    messages.push(
+      `Started ${command.display} — Nx owns package selection. If it wrote migrations.json, install then \`npx nx migrate --run-migrations\`.`,
+    );
+    return {
+      exitCode: 0,
+      report: { ...report, title: `Nx migrate ${command.args[command.args.length - 1] ?? ""}`.trim() },
+      messages,
+      writtenFiles: [group.manifestPath],
+    };
+  }
+
+  const post = await runPostVerify({
+    cwd,
+    pkg: group.package,
+    forcedVersion: decision.forcedVersion ?? group.forcedVersion ?? "",
+    advisories: group.advisories,
+    audit: opts.audit,
+  });
+  const postBlocked = blockingIssues(post);
+  if (postBlocked.length) {
+    restoreFiles(cwd, snap);
+    messages.push(...postBlocked.map((i) => i.message));
+    return {
+      exitCode: 1,
+      report: { ...report, title: "VERIFY_FAILED", validation: [...(report.validation ?? []), ...post] },
+      messages,
+    };
+  }
+
+  messages.push(`Installed via ${command.display} (no override written)`);
+  return {
+    exitCode: 0,
+    report: { ...report, title: `Upgraded via ${pm}` },
+    messages,
+    writtenFiles: [group.manifestPath],
+  };
 }
 
 function baseReport(

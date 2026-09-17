@@ -1,4 +1,4 @@
-import { execFile, execFileSync, type ExecFileOptions } from "node:child_process";
+import { execFile, execFileSync, spawn, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -54,9 +54,10 @@ type ExecOpts = {
   cwd?: string;
   timeout?: number;
   maxBuffer?: number;
+  stdio?: "pipe" | "inherit";
 };
 
-function execOptions(bin: ResolvedPm, opts: ExecOpts): ExecFileOptions {
+function execOptions(bin: ResolvedPm, opts: ExecOpts): ExecFileSyncOptionsWithStringEncoding {
   return {
     cwd: opts.cwd,
     encoding: "utf8",
@@ -73,6 +74,10 @@ export async function execPm(
   opts: ExecOpts = {},
 ): Promise<{ stdout: string; stderr: string }> {
   const bin = resolvePm(pm);
+  if (opts.stdio === "inherit") {
+    await execPmInherit(bin, args, opts);
+    return { stdout: "", stderr: "" };
+  }
   const run = execFileAsync(bin.file, [...bin.argsPrefix, ...args], execOptions(bin, opts)) as Promise<{
     stdout: string | Buffer;
     stderr: string | Buffer;
@@ -87,6 +92,27 @@ export async function execPm(
     }
     throw err;
   }
+}
+
+function execPmInherit(
+  bin: ResolvedPm,
+  args: string[],
+  opts: ExecOpts,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin.file, [...bin.argsPrefix, ...args], {
+      cwd: opts.cwd,
+      stdio: "inherit",
+      windowsHide: true,
+      shell: bin.shell,
+      timeout: opts.timeout ?? 300_000,
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${bin.file} ${args.join(" ")} exited ${code ?? "null"}`));
+    });
+  });
 }
 
 export function execPmSync(pm: PackageManager, args: string[], opts: ExecOpts = {}): string {

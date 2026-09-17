@@ -8,10 +8,11 @@ import { decide, resolveUpgradeDecision } from "../decision/engine.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
 import { applyFix } from "../fix/apply.js";
 import { createLiveRegistry } from "../registry/verify.js";
+import { createLiveInstall } from "../install/client.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
 import { listDropCandidates } from "./check.js";
 import { nowIso } from "../util/time.js";
-import type { AuditClient, CommandResult, PackageAlertGroup, RegistryClient } from "../types.js";
+import type { AuditClient, CommandResult, InstallClient, PackageAlertGroup, RegistryClient } from "../types.js";
 
 export async function runAnalyze(opts: {
   cwd: string;
@@ -31,6 +32,7 @@ export async function runFix(opts: {
   registry?: RegistryClient;
   enableAudit?: boolean;
   audit?: AuditClient;
+  install?: InstallClient;
 }): Promise<CommandResult> {
   const cwd = opts.cwd;
   const config = loadConfig(cwd);
@@ -92,6 +94,7 @@ export async function runFix(opts: {
       apply: Boolean(opts.apply),
       skipInstall: opts.skipInstall ?? true,
       registry,
+      install: opts.install ?? createLiveInstall(),
     });
     results.push(result);
   }

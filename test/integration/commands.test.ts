@@ -265,6 +265,10 @@ describe("runWhy / analyze", () => {
 describe("validation gates", () => {
   it("writes a safe override when Dependabot patchedVersion is still inside the range", async () => {
     await withFixture("npm-still-vulnerable", async (dir) => {
+      await writeFile(
+        join(dir, ".supplywardenrc.json"),
+        JSON.stringify({ upgradeRootThreshold: 0 }),
+      );
       const result = await runFix({
         cwd: dir,
         alertPath: join(FIXTURES_ROOT, "alerts/uuid-still-vulnerable.json"),

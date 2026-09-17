@@ -121,13 +121,14 @@ withGlobals(
   program
     .command("fix")
     .argument("[alert.json]", "Dependabot alert JSON; omit to run npm/pnpm/yarn audit")
-    .option("--apply", "write metadata + package.json")
+    .option("--apply", "write metadata + package.json, or run a root upgrade via the package manager")
     .option("--skip-audit", "do not run package-manager audit")
+    .option("--skip-install", "do not run npm/pnpm/yarn install")
     .description("Plan (and optionally apply) a fix from an alert file or live audit"),
 ).action(
   async (
     alertPath: string | undefined,
-    opts: { apply?: boolean; skipAudit?: boolean },
+    opts: { apply?: boolean; skipAudit?: boolean; skipInstall?: boolean },
     cmd: Command,
   ) => {
     emit(
@@ -135,7 +136,7 @@ withGlobals(
         cwd: cwdOf(cmd),
         alertPath: alertPath ? resolve(alertPath) : undefined,
         apply: opts.apply,
-        skipInstall: true,
+        skipInstall: Boolean(opts.skipInstall),
         enableAudit: auditEnabled(opts),
       }),
       cmd,
