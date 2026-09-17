@@ -248,10 +248,26 @@ export function resolvedVersion(cwd: string, pkgName: string): string | undefine
 }
 
 export function detectPackageManager(cwd: string): "npm" | "pnpm" | "yarn" | "unknown" {
+  const fromField = packageManagerFromManifest(cwd);
+  if (fromField) return fromField;
   if (existsSync(join(cwd, "pnpm-lock.yaml"))) return "pnpm";
   if (existsSync(join(cwd, "yarn.lock"))) return "yarn";
   if (existsSync(join(cwd, "package-lock.json"))) return "npm";
   return "unknown";
+}
+
+function packageManagerFromManifest(cwd: string): "npm" | "pnpm" | "yarn" | undefined {
+  const path = join(cwd, "package.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const pkg = JSON.parse(readFileSync(path, "utf8")) as { packageManager?: unknown };
+    const raw = String(pkg.packageManager ?? "").trim().toLowerCase();
+    const name = raw.split("@")[0];
+    if (name === "npm" || name === "pnpm" || name === "yarn") return name;
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 export function hasLockfile(cwd: string): boolean {

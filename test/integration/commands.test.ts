@@ -280,6 +280,7 @@ describe("validation gates", () => {
       expect(result.messages.join("\n")).toMatch(/uuid@11\.1\.1/);
       const pkg = readPackageJson(dir);
       expect(pkg.overrides?.uuid).toBe("11.1.1");
+      expect(pkg.pnpm?.overrides).toBeUndefined();
     });
   });
 

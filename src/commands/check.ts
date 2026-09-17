@@ -17,7 +17,7 @@ import {
   uncoveredFindings,
 } from "../audit/client.js";
 import { importOverridesFromPackageJson } from "../metadata/import.js";
-import { analyzeNpmGraph, dependencyKindLabel, mergeDependencyKind } from "../graph/npm.js";
+import { analyzeNpmGraph, dependencyKindLabel, detectPackageManager, mergeDependencyKind } from "../graph/npm.js";
 import { createLiveRegistry } from "../registry/verify.js";
 import type {
   AuditClient,
@@ -238,7 +238,7 @@ async function entryFromAuditGroup(
     strategy: decision.strategy,
     rootPackages: roots,
     dependencyChains: chains,
-    packageManager: "npm",
+    packageManager: detectPackageManager(cwd) === "unknown" ? "npm" : detectPackageManager(cwd),
     manifestPath: group.manifestPath,
     createdAt: nowIso(),
     createdBy: "audit",

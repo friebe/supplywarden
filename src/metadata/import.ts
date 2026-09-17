@@ -1,5 +1,6 @@
 import { addDaysIso, nowIso } from "../util/time.js";
 import { actorName } from "../config.js";
+import { detectPackageManager } from "../graph/npm.js";
 import type { GraphAnalysis, MetadataEntry, SupplywardenConfig } from "../types.js";
 import { extractExistingOverrides, readPackageJson } from "./sync.js";
 import { newEntryId } from "./store.js";
@@ -32,7 +33,7 @@ export function importOverridesFromPackageJson(
       strategy: "override",
       rootPackages: graph.roots.map((r) => r.name),
       dependencyChains: graph.chains.map((c) => c.path.join(" → ")),
-      packageManager: "npm",
+      packageManager: detectPackageManager(cwd) === "unknown" ? "npm" : detectPackageManager(cwd),
       manifestPath: "package.json",
       createdAt,
       createdBy: actorName(),

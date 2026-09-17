@@ -4,6 +4,7 @@ import { blockingIssues, runPreApplyGate } from "../validation/override-gate.js"
 import { runPostVerify } from "../validation/post-verify.js";
 import { readMetadata, writeMetadata, newEntryId } from "../metadata/store.js";
 import { syncOverridesToPackageJson, readPackageJson, writePackageJson } from "../metadata/sync.js";
+import { detectPackageManager } from "../graph/npm.js";
 import { addDaysIso, nowIso } from "../util/time.js";
 import { restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { actorName } from "../config.js";
@@ -109,7 +110,7 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     strategy: decision.strategy,
     rootPackages: graph.roots.map((r) => r.name),
     dependencyChains: graph.chains.map((c) => c.path.join(" → ")),
-    packageManager: "npm",
+    packageManager: detectPackageManager(cwd) === "unknown" ? "npm" : detectPackageManager(cwd),
     manifestPath: group.manifestPath,
     createdAt: duplicate?.createdAt ?? nowIso(),
     createdBy: actorName(),

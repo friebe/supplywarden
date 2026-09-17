@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { MetadataEntry, OverrideScope, SecurityMetadata } from "../types.js";
+import { detectPackageManager } from "../graph/npm.js";
+import type { MetadataEntry, OverrideScope, PackageManager, SecurityMetadata } from "../types.js";
 
 type PackageJson = {
   overrides?: Record<string, unknown>;
@@ -110,6 +111,53 @@ export function buildOverridesObject(entries: MetadataEntry[]): Record<string, u
   return result;
 }
 
+function toYarnResolutions(overrides: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (typeof value === "string") {
+      out[key] = value;
+      continue;
+    }
+    if (value && typeof value === "object") {
+      for (const [child, ver] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof ver === "string") out[`${key}/${child}`] = ver;
+      }
+    }
+  }
+  return out;
+}
+
+function clearPnpmOverrides(pkg: PackageJson): void {
+  if (!pkg.pnpm) return;
+  delete pkg.pnpm.overrides;
+  if (Object.keys(pkg.pnpm).length === 0) delete pkg.pnpm;
+}
+
+function writeOverrideSyntax(
+  pkg: PackageJson,
+  pm: PackageManager | "unknown",
+  overrides: Record<string, unknown>,
+): void {
+  const empty = Object.keys(overrides).length === 0;
+  if (pm === "pnpm") {
+    delete pkg.overrides;
+    if (empty) clearPnpmOverrides(pkg);
+    else pkg.pnpm = { ...(pkg.pnpm ?? {}), overrides };
+    if (pkg.resolutions && Object.keys(pkg.resolutions).length === 0) delete pkg.resolutions;
+    return;
+  }
+  if (pm === "yarn") {
+    delete pkg.overrides;
+    clearPnpmOverrides(pkg);
+    if (empty) delete pkg.resolutions;
+    else pkg.resolutions = toYarnResolutions(overrides);
+    return;
+  }
+  clearPnpmOverrides(pkg);
+  if (empty) delete pkg.overrides;
+  else pkg.overrides = overrides;
+}
+
 export function syncOverridesToPackageJson(
   cwd: string,
   metadata: SecurityMetadata,
@@ -117,16 +165,8 @@ export function syncOverridesToPackageJson(
 ): { path: string; overrides: Record<string, unknown> } {
   const pkg = readPackageJson(cwd, manifestPath);
   const overrides = buildOverridesObject(metadata.entries);
-  if (Object.keys(overrides).length === 0) {
-    delete pkg.overrides;
-    if (pkg.pnpm) {
-      delete pkg.pnpm.overrides;
-      if (Object.keys(pkg.pnpm).length === 0) delete pkg.pnpm;
-    }
-  } else {
-    pkg.overrides = overrides;
-    pkg.pnpm = { ...(pkg.pnpm ?? {}), overrides };
-  }
+  const pm = detectPackageManager(cwd);
+  writeOverrideSyntax(pkg, pm, overrides);
   const path = writePackageJson(cwd, pkg, manifestPath);
   return { path, overrides };
 }
