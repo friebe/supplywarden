@@ -7,7 +7,7 @@ import { deleteOverrideFromManifest, syncOverridesToPackageJson } from "../metad
 import { createLiveAudit, filterFindings } from "../audit/client.js";
 import { createLiveInstall } from "../install/client.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
-import { nowIso } from "../util/time.js";
+import { addDaysIso, nowIso } from "../util/time.js";
 import { actorName, loadConfig } from "../config.js";
 import type { AuditClient, CheckEntry, CommandResult, InstallClient, SupplywardenConfig } from "../types.js";
 
@@ -42,26 +42,31 @@ function persistVerifyFailed(
   return true;
 }
 
-function persistKeepClearsFailure(
+function persistVerifyKeep(
   cwd: string,
   config: SupplywardenConfig,
   candidate: CheckEntry,
   why: string,
-): void {
+): boolean {
   const meta = readMetadata(cwd, config);
   const entry =
     meta.entries.find((e) => e.id === candidate.entry.id) ??
     meta.entries.find(
       (e) =>
         e.package === candidate.entry.package &&
-        e.status === "verify_failed",
+        e.status !== "resolved" &&
+        e.status !== "superseded",
     );
-  if (!entry || entry.status !== "verify_failed") return;
+  if (!entry) return false;
   entry.status = "active";
   entry.resolvedAt = nowIso();
   entry.resolvedBy = actorName();
   entry.resolution = `verify-keep: ${why}`;
+  entry.reviewBy = addDaysIso(config.defaultReviewDays);
+  entry.reviewReason = "Verified — override still required";
+  entry.needsReview = false;
   writeMetadata(cwd, config, meta);
+  return true;
 }
 
 function overrideConflictPackage(error: string): string | undefined {
@@ -232,7 +237,9 @@ export async function runVerify(opts: {
     }
   }
   for (const item of keeps) {
-    persistKeepClearsFailure(cwd, config, item.candidate, item.why);
+    if (persistVerifyKeep(cwd, config, item.candidate, item.why)) {
+      written = [config.metadataPath];
+    }
   }
   const confirmed = probed.filter((p) => p.verifyOutcome === "CONFIRMED_REMOVABLE");
   if (opts.apply && confirmed.length) {

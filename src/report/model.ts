@@ -4,6 +4,7 @@ import { nextCommands, withReportCommands } from "./commands.js";
 import { formatDisplayDate, nowIso } from "../util/time.js";
 import { loadConfig } from "../config.js";
 import { dependencyKindLabel } from "../graph/npm.js";
+import { formatVerifiedKeep } from "./verified.js";
 
 export function emptyReport(cwd: string, title: string): ReportModel {
   return {
@@ -96,8 +97,10 @@ export function toMarkdown(report: ReportModel): string {
       const extraMark = extra ? ` · ${extra}` : "";
       const scope = e.dependencyKind ?? "—";
       const cmd = (e.commands ?? nextCommands(e)).map((c) => `\`${c}\``).join(" · ");
+      const verified = e.verifiedNote ?? formatVerifiedKeep(e.entry, dateOpts);
+      const verifiedMark = verified ? ` · ${verified}` : "";
       lines.push(
-        `| ${e.entry.package}@${e.entry.forcedVersion}${extraMark} | ${e.statuses.join(" + ")}${verify} | ${scope} | ${cmd || e.suggestedAction} | ${formatDisplayDate(e.entry.reviewBy, dateOpts)} |`,
+        `| ${e.entry.package}@${e.entry.forcedVersion}${extraMark} | ${e.statuses.join(" + ")}${verify}${verifiedMark} | ${scope} | ${cmd || e.suggestedAction} | ${formatDisplayDate(e.entry.reviewBy, dateOpts)} |`,
       );
     }
     lines.push("");

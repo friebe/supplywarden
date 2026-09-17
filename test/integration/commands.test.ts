@@ -468,6 +468,14 @@ describe("runVerify", () => {
         install: createStaticInstall(),
       });
       expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
+      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
+      expect(meta.entries[0].status).toBe("active");
+      expect(meta.entries[0].resolution).toMatch(/^verify-keep:/);
+      expect(meta.entries[0].resolvedAt).toBeTruthy();
+      expect(meta.entries[0].resolvedBy).toBeTruthy();
+      const resolved = new Date(meta.entries[0].resolvedAt).getTime();
+      const reviewBy = new Date(meta.entries[0].reviewBy).getTime();
+      expect(reviewBy - resolved).toBeGreaterThanOrEqual(6 * 86_400_000);
     });
   });
 
@@ -564,6 +572,33 @@ describe("runVerify", () => {
       expect(result.report.entries[0]!.verifyOutcome).toBe("CONFIRMED_REMOVABLE");
       const pkg = readPackageJson(dir);
       expect(pkg.overrides?.qs).toBe("6.11.2");
+    });
+  });
+
+  it("records KEEP so the next check shows verified date instead of overdue", async () => {
+    await withFixture("npm-mixed", async (dir) => {
+      const before = await runCheck({ cwd: dir, enableAudit: false });
+      expect(before.report.entries.find((e) => e.entry.package === "picomatch")?.status).toBe(
+        "OVERDUE",
+      );
+      const result = await runVerify({
+        cwd: dir,
+        package: "picomatch",
+        skipInstall: true,
+        audit: createStaticAudit([
+          { package: "picomatch", severity: "high", range: "< 4.0.3", ghsaId: "GHSA-c2c7-rcm5-vvqj" },
+        ]),
+        install: createStaticInstall(),
+      });
+      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
+      const after = await runCheck({ cwd: dir, enableAudit: false });
+      const picomatch = after.report.entries.find((e) => e.entry.package === "picomatch");
+      expect(picomatch?.status).toBe("OK");
+      expect(picomatch?.statuses).not.toContain("OVERDUE");
+      expect(picomatch?.entry.resolution).toMatch(/^verify-keep:/);
+      const html = renderHtml(after.report);
+      expect(html).toMatch(/verified /);
+      expect(toMarkdown(after.report)).toMatch(/verified /);
     });
   });
 

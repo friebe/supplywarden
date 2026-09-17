@@ -5,6 +5,7 @@ import type { ReportModel } from "../types.js";
 import { withReportCommands } from "./commands.js";
 import { loadConfig } from "../config.js";
 import { formatDisplayDate } from "../util/time.js";
+import { formatVerifiedKeep } from "./verified.js";
 
 function loadTemplate(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -35,7 +36,14 @@ export function renderHtml(report: ReportModel): string {
       const next = withReportCommands(e);
       return {
         ...next,
-        entry: { ...next.entry, reviewBy: formatDisplayDate(next.entry.reviewBy, dateOpts) },
+        verifiedNote: formatVerifiedKeep(next.entry, dateOpts),
+        entry: {
+          ...next.entry,
+          reviewBy: formatDisplayDate(next.entry.reviewBy, dateOpts),
+          resolvedAt: next.entry.resolvedAt
+            ? formatDisplayDate(next.entry.resolvedAt, dateOpts)
+            : next.entry.resolvedAt,
+        },
       };
     }),
   };

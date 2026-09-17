@@ -184,6 +184,8 @@ export type CheckEntry = {
   weakOverride?: boolean;
   /** Live audit does not list this package. Parent specs are a hint, not a KEEP. */
   auditClear?: boolean;
+  /** Last verify KEEP: "verified 17.09.2026, 11:35 jan" for HTML/markdown. */
+  verifiedNote?: string;
   verifyOutcome?: VerifyOutcome;
   decision?: Decision;
 };

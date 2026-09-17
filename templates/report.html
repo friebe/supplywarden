@@ -251,7 +251,7 @@
     }
     function haystack(e) {
       const ghsaHay = ((e.entry.advisories || []).map((a) => (a.ghsaId || '') + ' ' + (a.cveId || '')).join(' '));
-      return (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '') + ' ' + (e.dependencyKind || '') + ' ' + ghsaHay).toLowerCase();
+      return (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '') + ' ' + (e.dependencyKind || '') + ' ' + (e.verifiedNote || '') + ' ' + ghsaHay).toLowerCase();
     }
     function statusLabel(e) {
       const names = {
@@ -269,6 +269,7 @@
       const st = statusesOf(e);
       const primary = names[e.status] || names[st[0]] || e.status;
       const extra = st.filter((s) => s !== e.status && s !== st[0]).map((s) => names[s] || s);
+      if (e.verifiedNote) extra.push(e.verifiedNote);
       return '<span class="status">' + esc(primary) +
         (extra.length ? ' <span class="more">· ' + esc(extra.join(' · ')) + '</span>' : '') +
         '</span>';
