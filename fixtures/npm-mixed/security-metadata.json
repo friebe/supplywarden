@@ -129,7 +129,10 @@
       "createdAt": "2025-01-01T00:00:00.000Z",
       "createdBy": "fixture",
       "reviewBy": "2026-12-01T00:00:00.000Z",
-      "reviewReason": "re-run verify"
+      "reviewReason": "re-run verify",
+      "resolvedAt": "2026-09-10T08:00:00.000Z",
+      "resolvedBy": "jan",
+      "resolution": "verify-failed: peer conflict"
     },
     {
       "id": "picomatch-dev-overdue",
@@ -182,6 +185,137 @@
       "createdBy": "fixture",
       "reviewBy": "2026-12-01T00:00:00.000Z",
       "reviewReason": "Nothing pulls this package anymore"
+    },
+    {
+      "id": "ip-ok",
+      "status": "active",
+      "package": "ip",
+      "forcedVersion": "2.0.1",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-78xj-cgh5-2h22",
+          "cveId": "CVE-2023-42282",
+          "severity": "high",
+          "vulnerableRange": "< 1.1.9",
+          "patchedVersion": "2.0.1"
+        }
+      ],
+      "reason": "Tracked override still holding ip; review date not due",
+      "strategy": "override",
+      "rootPackages": ["ip"],
+      "dependencyChains": ["ip@1.1.8"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2026-09-01T00:00:00.000Z",
+      "createdBy": "jan",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "Pin is doing its job"
+    },
+    {
+      "id": "follow-redirects-verified",
+      "status": "active",
+      "package": "follow-redirects",
+      "forcedVersion": "1.15.6",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-cxjh-pqh5-hv5q",
+          "cveId": "CVE-2024-28849",
+          "severity": "high",
+          "vulnerableRange": "< 1.15.6",
+          "patchedVersion": "1.15.6"
+        }
+      ],
+      "reason": "Last triage KEEP: audit still reports the vuln without the pin",
+      "strategy": "override",
+      "rootPackages": ["follow-redirects"],
+      "dependencyChains": ["follow-redirects@1.14.9"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2026-08-01T00:00:00.000Z",
+      "createdBy": "jan",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "Already probed last meeting",
+      "resolvedAt": "2026-09-17T09:35:00.000Z",
+      "resolvedBy": "jan",
+      "resolution": "verify-keep: audit still reports 1 finding(s)"
+    },
+    {
+      "id": "nth-check-weak",
+      "status": "active",
+      "package": "nth-check",
+      "forcedVersion": "^1.0.0",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-rp65-9cf3-cjxr",
+          "cveId": "CVE-2021-3803",
+          "severity": "high",
+          "vulnerableRange": "< 2.0.1",
+          "patchedVersion": "2.0.1"
+        }
+      ],
+      "reason": "Override floor still allows vulnerable nth-check — no-op pin",
+      "strategy": "override",
+      "rootPackages": ["nth-check"],
+      "dependencyChains": ["nth-check@1.0.2"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2026-09-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "Raise the override, do not drop it"
+    },
+    {
+      "id": "fsevents-optional",
+      "status": "active",
+      "package": "fsevents",
+      "forcedVersion": "2.3.3",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-fsev-opts-demo1",
+          "severity": "high",
+          "vulnerableRange": "< 2.3.3",
+          "patchedVersion": "2.3.3"
+        }
+      ],
+      "reason": "optionalDependency tree only; override not yet in the lockfile",
+      "strategy": "override",
+      "rootPackages": ["fsevents"],
+      "dependencyChains": ["fsevents@2.3.2"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2026-09-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "Optional scope, still decide"
+    },
+    {
+      "id": "debug-leftover",
+      "status": "active",
+      "package": "debug",
+      "forcedVersion": "4.3.4",
+      "scope": { "type": "global" },
+      "advisories": [
+        {
+          "ghsaId": "GHSA-9vvw-5h86-jpv7",
+          "severity": "high",
+          "vulnerableRange": "< 4.3.1",
+          "patchedVersion": "4.3.1"
+        }
+      ],
+      "reason": "Leftover: express already asks for debug@4.3.4 (patched); override not holding anything",
+      "strategy": "override",
+      "rootPackages": ["express"],
+      "dependencyChains": ["express@4.18.2 → debug@4.3.4"],
+      "packageManager": "npm",
+      "manifestPath": "package.json",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "createdBy": "fixture",
+      "reviewBy": "2026-12-01T00:00:00.000Z",
+      "reviewReason": "Parents already require the patched floor"
     }
   ]
 }

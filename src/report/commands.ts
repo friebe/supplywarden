@@ -4,7 +4,13 @@ import type { CheckEntry } from "../types.js";
 export function nextCommands(e: CheckEntry): string[] {
   const pkg = e.entry.package;
   const st = e.statuses.length ? e.statuses : [e.status];
-  if (st.includes("NEW")) return ["supplywarden fix --apply"];
+  if (st.includes("NEW")) {
+    if (e.decision?.strategy === "upgrade") {
+      if (e.upgradeCommands?.length) return e.upgradeCommands;
+      if (e.upgradeCommand) return [e.upgradeCommand];
+    }
+    return ["supplywarden fix --apply"];
+  }
   if (e.weakOverride && !e.auditClear) return ["supplywarden fix --apply"];
   if (st.includes("UNTRACKED")) {
     const cmds = ["supplywarden init"];

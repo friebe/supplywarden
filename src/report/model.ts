@@ -1,6 +1,7 @@
 import type { CheckEntry, ReportModel } from "../types.js";
 import { removableReasonLabel, sortCheckEntries } from "../check/classify.js";
 import { nextCommands, withReportCommands } from "./commands.js";
+import { formatUpgradeTarget, formatUpgradeTargets } from "../decision/engine.js";
 import { formatDisplayDate, nowIso } from "../util/time.js";
 import { loadConfig } from "../config.js";
 import { dependencyKindLabel } from "../graph/npm.js";
@@ -71,6 +72,30 @@ export function toMarkdown(report: ReportModel): string {
   }
 
   const entries = sortCheckEntries(report.entries).map(withReportCommands);
+  const news = entries.filter((e) => e.status === "NEW" || e.statuses.includes("NEW"));
+  if (news.length) {
+    lines.push("## New", "");
+    for (const e of news) {
+      const installed = e.installedVersions?.join(", ") || "—";
+      lines.push(`- **${e.entry.package}** (lockfile ${installed})`);
+      if (e.decision?.strategy === "upgrade") {
+        const targets = (e.decision.upgradeTargets ?? []).filter((t) => t.to);
+        for (const t of targets) {
+          lines.push(`  - ${formatUpgradeTarget(t)}`);
+        }
+        if (!targets.length) {
+          const bump = formatUpgradeTargets(e.decision);
+          if (bump) lines.push(`  - ${bump}`);
+        }
+      } else {
+        lines.push(`  - OVERRIDE ${e.entry.package}@${e.decision?.forcedVersion ?? e.entry.forcedVersion}`);
+      }
+      for (const c of e.commands ?? nextCommands(e)) {
+        lines.push(`  - \`${c}\``);
+      }
+    }
+    lines.push("");
+  }
   const removable = entries.filter(canRemove);
   if (removable.length) {
     lines.push("## Safe to remove", "");
@@ -97,10 +122,12 @@ export function toMarkdown(report: ReportModel): string {
       const extraMark = extra ? ` · ${extra}` : "";
       const scope = e.dependencyKind ?? "—";
       const cmd = (e.commands ?? nextCommands(e)).map((c) => `\`${c}\``).join(" · ");
+      const upgrade = formatUpgradeTargets(e.decision);
+      const rec = [upgrade, cmd || e.suggestedAction].filter(Boolean).join(" · ");
       const verified = e.verifiedNote ?? formatVerifiedKeep(e.entry, dateOpts);
       const verifiedMark = verified ? ` · ${verified}` : "";
       lines.push(
-        `| ${e.entry.package}@${e.entry.forcedVersion}${extraMark} | ${e.statuses.join(" + ")}${verify}${verifiedMark} | ${scope} | ${cmd || e.suggestedAction} | ${formatDisplayDate(e.entry.reviewBy, dateOpts)} |`,
+        `| ${e.entry.package}@${e.entry.forcedVersion}${extraMark} | ${e.statuses.join(" + ")}${verify}${verifiedMark} | ${scope} | ${rec} | ${formatDisplayDate(e.entry.reviewBy, dateOpts)} |`,
       );
     }
     lines.push("");

@@ -84,6 +84,7 @@
     th { color: var(--muted); font-weight: 450; font-size: 12px; }
     tr:last-child td { border-bottom: 0; }
     .pkg { font-weight: 550; color: var(--ink); }
+    .upgrade { font-size: 13px; margin-top: 2px; }
     .status { font-weight: 550; color: var(--ink); white-space: nowrap; }
     .status .more { font-weight: 400; color: var(--muted); }
     .sev-high, .sev-critical { color: var(--ink); font-weight: 550; }
@@ -156,7 +157,13 @@
       if (e.commands && e.commands.length) return e.commands;
       const pkg = (e.entry && e.entry.package) || '';
       const st = e.statuses && e.statuses.length ? e.statuses : [e.status];
-      if (st.includes('NEW')) return ['supplywarden fix --apply'];
+      if (st.includes('NEW')) {
+        if (e.decision && e.decision.strategy === 'upgrade') {
+          if (e.upgradeCommands && e.upgradeCommands.length) return e.upgradeCommands;
+          if (e.upgradeCommand) return [e.upgradeCommand];
+        }
+        return ['supplywarden fix --apply'];
+      }
       if (e.weakOverride && !e.auditClear) return ['supplywarden fix --apply'];
       if (st.includes('UNTRACKED')) {
         const cmds = ['supplywarden init'];
@@ -236,6 +243,23 @@
       }
       return '<span class="quiet">—</span>';
     }
+    function formatUpgradeTarget(t) {
+      var skip = '';
+      if (t && t.skipped && t.skipped.length) {
+        var shown = t.skipped.slice(0, 3);
+        var more = t.skipped.length > shown.length ? ' +' + (t.skipped.length - shown.length) : '';
+        skip = ' (not ' + shown.join(', ') + more + ' — still vulnerable)';
+      }
+      if (t && t.to && t.from && t.to !== t.from) return t.name + '@' + t.from + ' → ' + t.to + skip;
+      if (t && t.to) return t.name + ' → ' + t.to + skip;
+      return '';
+    }
+    function upgradeHint(e) {
+      if (!e.decision || e.decision.strategy !== 'upgrade') return '';
+      const parts = (e.decision.upgradeTargets || []).map(formatUpgradeTarget).filter(Boolean);
+      if (!parts.length) return '';
+      return '<div class="upgrade">' + esc(parts.join(', ')) + '</div>';
+    }
     function graphBlock(e) {
       const roots = e.roots || e.entry.rootPackages || [];
       const chains = e.chains || e.entry.dependencyChains || [];
@@ -251,7 +275,8 @@
     }
     function haystack(e) {
       const ghsaHay = ((e.entry.advisories || []).map((a) => (a.ghsaId || '') + ' ' + (a.cveId || '')).join(' '));
-      return (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '') + ' ' + (e.dependencyKind || '') + ' ' + (e.verifiedNote || '') + ' ' + ghsaHay).toLowerCase();
+      const upgradeHay = ((e.decision && e.decision.upgradeTargets) || []).map((t) => [t.name, t.from, t.to].filter(Boolean).join(' ')).join(' ');
+      return (e.entry.package + ' ' + e.status + ' ' + (e.suggestedAction || '') + ' ' + (e.dependencyKind || '') + ' ' + (e.verifiedNote || '') + ' ' + ghsaHay + ' ' + upgradeHay).toLowerCase();
     }
     function statusLabel(e) {
       const names = {
@@ -279,7 +304,7 @@
       const hint = e.removableReason ? '<div class="quiet">' + esc(REASON[e.removableReason] || '') + '</div>' : '';
       const sevClass = (sev === 'high' || sev === 'critical') ? 'sev-' + sev : 'quiet';
       return '<tr><td>' + statusLabel(e) + '</td>' +
-        '<td><div class="pkg">' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</div>' + advisoryLinks(e) + hint + graphBlock(e) + '</td>' +
+        '<td><div class="pkg">' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) + '</div>' + upgradeHint(e) + advisoryLinks(e) + hint + graphBlock(e) + '</td>' +
         '<td class="' + sevClass + '">' + esc(sev === 'unknown' ? '—' : sev) + '</td>' +
         '<td>' + scopeBadge(e.dependencyKind) + '</td>' +
         '<td>' + actionCell(e) + '</td>' +

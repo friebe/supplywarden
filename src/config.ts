@@ -8,6 +8,7 @@ export const LEGACY_CONFIG_FILENAME = ".vulnfixrc.json";
 
 export const DEFAULT_CONFIG: SupplywardenConfig = {
   upgradeRootThreshold: 3,
+  autoApplyRootUpgrade: false,
   defaultReviewDays: 7,
   metadataPath: "security-metadata.json",
   impactWarnThreshold: 20,
@@ -43,6 +44,7 @@ export function loadConfig(cwd: string): SupplywardenConfig {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<SupplywardenConfig>;
     return {
       upgradeRootThreshold: raw.upgradeRootThreshold ?? DEFAULT_CONFIG.upgradeRootThreshold,
+      autoApplyRootUpgrade: raw.autoApplyRootUpgrade === true,
       defaultReviewDays: raw.defaultReviewDays ?? DEFAULT_CONFIG.defaultReviewDays,
       metadataPath: raw.metadataPath ?? DEFAULT_CONFIG.metadataPath,
       impactWarnThreshold: raw.impactWarnThreshold ?? DEFAULT_CONFIG.impactWarnThreshold,

@@ -147,11 +147,13 @@ withGlobals(
 withGlobals(
   program
     .command("check")
+    .argument("[alert.json]", "Dependabot JSON for NEW findings; omit to run npm/pnpm/yarn audit")
     .option("--strict", "exit 1 on overdue high/critical, drift, verify_failed, or new audit findings")
     .option("--skip-audit", "skip package-manager audit")
     .description("Audit, triage new findings, and classify existing overrides"),
 ).action(
   async (
+    alertPath: string | undefined,
     opts: { strict?: boolean; skipAudit?: boolean },
     cmd: Command,
   ) => {
@@ -159,7 +161,8 @@ withGlobals(
       await runCheck({
         cwd: cwdOf(cmd),
         strict: opts.strict,
-        enableAudit: auditEnabled(opts),
+        enableAudit: alertPath ? false : auditEnabled(opts),
+        alertPath: alertPath ? resolve(alertPath) : undefined,
       }),
       cmd,
     );

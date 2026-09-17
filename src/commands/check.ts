@@ -6,7 +6,7 @@ import {
   reconcileWithAudit,
   sortCheckEntries,
 } from "../check/classify.js";
-import { decide, formatUpgradeTarget, resolveUpgradeDecision } from "../decision/engine.js";
+import { decide, formatUpgradeTarget, formatUpgradeTargets, lookupFromRegistry, resolveUpgradeDecision } from "../decision/engine.js";
 import { specFloorSafe } from "../util/semver-spec.js";
 import { readMetadata } from "../metadata/store.js";
 import { nowIso } from "../util/time.js";
@@ -17,9 +17,10 @@ import {
   uncoveredFindings,
 } from "../audit/client.js";
 import { importOverridesFromPackageJson } from "../metadata/import.js";
+import { alertsFromInput, groupAlerts, loadAlertFile } from "../alerts/dependabot.js";
 import { analyzeNpmGraph, dependencyKindLabel, mergeDependencyKind, resolvePackageManager } from "../graph/npm.js";
 import { createLiveRegistry } from "../registry/verify.js";
-import { isNxPackage } from "../fix/upgrade-command.js";
+import { rootUpgradeCommands } from "../fix/upgrade-command.js";
 import type {
   AuditClient,
   CheckEntry,
@@ -36,6 +37,8 @@ export async function runCheck(opts: {
   cwd: string;
   strict?: boolean;
   enableAudit?: boolean;
+  /** Dependabot JSON — NEW findings without live `npm audit` (kitchen-sink fixture). */
+  alertPath?: string;
   audit?: AuditClient;
   registry?: RegistryClient;
 }): Promise<CommandResult> {
@@ -53,7 +56,20 @@ export async function runCheck(opts: {
   let auditError: string | undefined;
   const newGroups: PackageAlertGroup[] = [];
 
-  if (auditEnabled) {
+  if (opts.alertPath) {
+    const raw = loadAlertFile(opts.alertPath);
+    const known = new Set([
+      ...metadata.entries
+        .filter((e) => e.status !== "resolved" && e.status !== "superseded")
+        .map((e) => e.package),
+      ...untracked.map((e) => e.entry.package),
+    ]);
+    newGroups.push(...groupAlerts(alertsFromInput(raw)).filter((g) => !known.has(g.package)));
+    const registry = opts.registry ?? createLiveRegistry(cwd);
+    classified.push(
+      ...(await Promise.all(newGroups.map((group) => entryFromAuditGroup(cwd, group, config, registry)))),
+    );
+  } else if (auditEnabled) {
     const client = opts.audit ?? createLiveAudit();
     const result = await client.audit(cwd);
     auditError = result.error;
@@ -64,7 +80,7 @@ export async function runCheck(opts: {
     }
     const uncovered = uncoveredFindings(filtered, metadata.entries);
     newGroups.push(...findingsToGroups(uncovered));
-    const registry = opts.registry ?? (opts.audit ? undefined : createLiveRegistry());
+    const registry = opts.registry ?? (opts.audit ? undefined : createLiveRegistry(cwd));
     classified.push(
       ...(await Promise.all(newGroups.map((group) => entryFromAuditGroup(cwd, group, config, registry)))),
     );
@@ -91,12 +107,17 @@ export async function runCheck(opts: {
       `${untracked.length} override(s) in package.json are untracked — run supplywarden init`,
     );
   }
+  for (const entry of sorted.filter((c) => c.status === "NEW" || c.statuses.includes("NEW"))) {
+    messages.push(formatNewFindingMessage(entry));
+  }
   if (!sorted.length) {
     messages.push(
       "Nothing to show: no security-metadata.json entries and no package.json overrides. Run init or analyze/fix.",
     );
   }
-  if (auditEnabled) {
+  if (opts.alertPath) {
+    messages.push(`alerts: ${newGroups.length} untracked finding(s) from ${opts.alertPath}`);
+  } else if (auditEnabled) {
     messages.push(
       auditError
         ? `audit failed: ${auditError}`
@@ -140,7 +161,7 @@ export async function runCheck(opts: {
         untracked: untracked.length,
         removable: removableCount,
         ...counts,
-        ...(auditEnabled ? { auditNew: newGroups.length } : {}),
+        ...(opts.alertPath || auditEnabled ? { auditNew: newGroups.length } : {}),
       },
       entries: sorted,
       groups: newGroups.length ? newGroups : undefined,
@@ -192,11 +213,26 @@ export function listUntrackedOverrides(
     .map((entry) => classifyUntrackedOverride(cwd, entry));
 }
 
+function formatNewFindingMessage(entry: CheckEntry): string {
+  const installed = entry.installedVersions?.join(", ") || "?";
+  const pkg = entry.entry.package;
+  if (entry.decision?.strategy === "upgrade") {
+    const bump = formatUpgradeTargets(entry.decision) || (entry.roots ?? []).join(", ") || pkg;
+    const cmds = (entry.upgradeCommands ?? (entry.upgradeCommand ? [entry.upgradeCommand] : [])).join(" then ");
+    return cmds
+      ? `NEW ${pkg} (lockfile ${installed}): ${bump} — ${cmds}`
+      : `NEW ${pkg} (lockfile ${installed}): ${bump}`;
+  }
+  return `NEW ${pkg} (lockfile ${installed}): OVERRIDE ${pkg}@${entry.entry.forcedVersion}`;
+}
+
 function newFindingAction(
   group: PackageAlertGroup,
   decision: Decision,
   roots: string[],
-  kind?: DependencyKind,
+  kind: DependencyKind | undefined,
+  upgradeCmds: string[],
+  autoApplyRootUpgrade?: boolean,
 ): string {
   const kindTag = dependencyKindLabel(kind);
   const sev = group.maxSeverity.toUpperCase() + (kindTag ? ` (${kindTag})` : "");
@@ -204,12 +240,15 @@ function newFindingAction(
     const targets = (decision.upgradeTargets ?? [])
       .map((t) => formatUpgradeTarget(t))
       .join(", ");
-    const nx = decision.upgradeTargets?.find((t) => isNxPackage(t.name));
-    if (nx) {
-      const spec = nx.to ? `nx@${nx.to}` : "latest";
-      return `New ${sev}: UPGRADE ${targets || roots.join(", ") || group.package} — run \`supplywarden fix --apply\` (starts \`npx nx migrate ${spec}\`)`;
+    const what = targets || roots.join(", ") || group.package;
+    const cmdText = upgradeCmds.map((c) => `\`${c}\``).join(" then ");
+    if (cmdText && !autoApplyRootUpgrade) {
+      return `New ${sev}: UPGRADE ${what} — run ${cmdText}`;
     }
-    return `New ${sev}: UPGRADE ${targets || roots.join(", ") || group.package} — run \`supplywarden fix --apply\``;
+    if (cmdText && autoApplyRootUpgrade) {
+      return `New ${sev}: UPGRADE ${what} — run \`supplywarden fix --apply\` (starts ${cmdText})`;
+    }
+    return `New ${sev}: UPGRADE ${what} — run \`supplywarden fix --apply\``;
   }
   const ver = decision.forcedVersion ?? group.forcedVersion;
   if (!ver || !specFloorSafe(ver, group.advisories)) {
@@ -226,13 +265,20 @@ async function entryFromAuditGroup(
   registry?: RegistryClient,
 ): Promise<CheckEntry> {
   const graph = analyzeNpmGraph(cwd, group.package);
-  const decision = await resolveUpgradeDecision(decide({ graph, advisories: group.advisories, config }), {
-    latestVersion: registry?.latestVersion?.bind(registry),
-    getLatestMatching: registry?.getLatestMatching?.bind(registry),
-  });
+  const decision = await resolveUpgradeDecision(
+    decide({ graph, advisories: group.advisories, config }),
+    lookupFromRegistry(registry),
+    { vulnPackage: group.package, advisories: group.advisories, chains: graph.chains },
+  );
   const roots = graph.roots.map((r) => r.name);
   const chains = graph.chains.map((c) => c.path.join(" → "));
   const kind = mergeDependencyKind(group.dependencyKind, graph.dependencyKind);
+  const pm = resolvePackageManager(cwd);
+  const upgradeCmds =
+    decision.strategy === "upgrade"
+      ? rootUpgradeCommands(pm, decision.upgradeTargets ?? [])
+      : [];
+  const upgradeDisplays = upgradeCmds.map((c) => c.display);
   const entry: MetadataEntry = {
     id: `audit:${group.package}`,
     status: "pending_verify",
@@ -244,7 +290,7 @@ async function entryFromAuditGroup(
     strategy: decision.strategy,
     rootPackages: roots,
     dependencyChains: chains,
-    packageManager: resolvePackageManager(cwd),
+    packageManager: pm,
     manifestPath: group.manifestPath,
     createdAt: nowIso(),
     createdBy: "audit",
@@ -256,12 +302,21 @@ async function entryFromAuditGroup(
     entry,
     status: "NEW",
     statuses: ["NEW"],
-    suggestedAction: newFindingAction(group, decision, roots, kind),
+    suggestedAction: newFindingAction(
+      group,
+      decision,
+      roots,
+      kind,
+      upgradeDisplays,
+      config.autoApplyRootUpgrade,
+    ),
     issues: [],
     roots,
     chains,
     installedVersions: graph.versions,
     decision,
     dependencyKind: kind,
+    upgradeCommand: config.autoApplyRootUpgrade ? undefined : upgradeDisplays[0],
+    upgradeCommands: config.autoApplyRootUpgrade ? undefined : upgradeDisplays,
   };
 }

@@ -354,6 +354,32 @@ describe("toMarkdown removable section", () => {
     expect(newAt).toBeLessThan(overdueAt);
     expect(overdueAt).toBeLessThan(okAt);
   });
+
+  it("names the minimum root version that closes the vuln", () => {
+    const md = toMarkdown({
+      title: "t",
+      generatedAt: "now",
+      cwd: "/x",
+      summary: {},
+      entries: [
+        {
+          entry: stubEntry("smol-toml", "1.4.2"),
+          status: "NEW",
+          statuses: ["NEW"],
+          suggestedAction: "upgrade",
+          issues: [],
+          decision: {
+            strategy: "upgrade",
+            reason: "one root",
+            scope: { type: "global" },
+            upgradeTargets: [{ name: "nx", from: "23.2.1", to: "23.2.5" }],
+          },
+          upgradeCommand: "npx nx migrate nx@23.2.5",
+        },
+      ],
+    });
+    expect(md).toMatch(/nx@23\.2\.1 → 23\.2\.5/);
+  });
 });
 
 function stubEntry(pkg: string, forcedVersion: string): MetadataEntry {

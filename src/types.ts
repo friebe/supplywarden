@@ -96,6 +96,8 @@ export type DateLocale = "de" | "en";
 
 export type SupplywardenConfig = {
   upgradeRootThreshold: number;
+  /** When true, `fix --apply` runs the suggested root upgrade (`npm install` / `pnpm add` / `nx migrate`). Default: suggest only. */
+  autoApplyRootUpgrade: boolean;
   defaultReviewDays: number;
   metadataPath: string;
   impactWarnThreshold: number;
@@ -144,12 +146,20 @@ export type PackageAlertGroup = {
   dependencyKind?: DependencyKind;
 };
 
+export type UpgradeTarget = {
+  name: string;
+  from?: string;
+  to?: string;
+  /** Newer versions tried before `to` that still allow the vuln (e.g. 23.2.1). */
+  skipped?: string[];
+};
+
 export type Decision = {
   strategy: Strategy;
   reason: string;
   forcedVersion?: string;
   scope: OverrideScope;
-  upgradeTargets?: Array<{ name: string; from?: string; to?: string }>;
+  upgradeTargets?: UpgradeTarget[];
 };
 
 export type ValidationIssue = {
@@ -172,6 +182,10 @@ export type CheckEntry = {
   suggestedAction: string;
   /** Canonical CLI to copy from the HTML report (derived from status, not prose). */
   commands?: string[];
+  /** Copy-paste root upgrade (`npm install pkg@next`, and/or `npx nx migrate` if a root is `nx`). */
+  upgradeCommand?: string;
+  /** All root-upgrade CLIs when nx and a normal package are mixed (HTML copy buttons). */
+  upgradeCommands?: string[];
   issues: ValidationIssue[];
   removableReason?: RemovableReason;
   roots?: string[];
@@ -223,6 +237,12 @@ export type RegistryClient = {
     pkg: string,
     range: string,
   ) => Promise<string | undefined>;
+  /** Published versions newer than `from`, ascending, excluding deprecated. `undefined` if lookup failed. */
+  versionsNewerThan?: (pkg: string, from: string) => Promise<string[] | undefined>;
+  /** Declared range for `dep` in `pkg@version` (dependencies / optionalDependencies). */
+  dependencyRange?: (pkg: string, version: string, dep: string) => Promise<string | undefined>;
+  /** Lowest published version that satisfies `range`. */
+  minMatching?: (pkg: string, range: string) => Promise<string | undefined>;
   advisoriesFor?: (
     pkg: string,
     version: string,

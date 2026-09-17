@@ -9,7 +9,8 @@ import { addDaysIso, nowIso } from "../util/time.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { actorName } from "../config.js";
 import { createLiveInstall } from "../install/client.js";
-import { rootUpgradeCommand } from "./upgrade-command.js";
+import { quotedUpgradeCommands, rootUpgradeCommands } from "./upgrade-command.js";
+import { formatUpgradeTargets } from "../decision/engine.js";
 import type {
   AuditClient,
   CommandResult,
@@ -220,24 +221,47 @@ async function applyRootUpgrade(
   const { cwd, config, group, decision } = opts;
   const { messages, blocked, report, impact } = ctx;
   const pm = resolvePackageManager(cwd);
-  const command = rootUpgradeCommand(pm, decision.upgradeTargets ?? []);
+  const commands = rootUpgradeCommands(pm, decision.upgradeTargets ?? []);
+  const quoted = quotedUpgradeCommands(commands);
+  const hasNx = commands.some((c) => c.kind === "nx");
+  const hasInstall = commands.some((c) => c.kind === "install");
+  const nx = commands.find((c) => c.kind === "nx");
+  const installCmd = commands.find((c) => c.kind === "install");
 
   if (impact.warning) {
     messages.push(
       `Impact: ${impact.changedPackages} packages (≥ warn threshold ${config.impactWarnThreshold})`,
     );
   }
-  if (command) {
-    messages.push(`Package manager: ${command.display}`);
+  if (commands.length) {
+    const bump = formatUpgradeTargets(decision);
+    if (bump) messages.push(`Upgrade ${bump}`);
+    messages.push(`Package manager: ${commands.map((c) => c.display).join(" then ")}`);
+  }
+
+  if (!commands.length) {
+    messages.push("No upgrade version resolved — not writing package.json");
+    return { exitCode: 1, report: { ...report, title: "No upgrade version" }, messages };
   }
 
   if (!opts.apply) {
     messages.push(
-      command?.kind === "nx"
-        ? "Dry-run: pass --apply to start Nx migrate (Nx asks which packages to update)"
-        : "Dry-run: pass --apply to run the package-manager upgrade (package.json is not edited here)",
+      config.autoApplyRootUpgrade
+        ? hasNx && !hasInstall
+          ? "Dry-run: pass --apply to start Nx migrate (Nx asks which packages to update)"
+          : hasNx && hasInstall
+            ? `Dry-run: pass --apply to run ${installCmd!.display} then start Nx migrate (Nx asks which packages to update)`
+            : "Dry-run: pass --apply to run the package-manager upgrade (package.json is not edited here)"
+        : `Dry-run: root upgrade is a suggestion — run ${quoted} (set autoApplyRootUpgrade to run it from fix --apply)`,
     );
     return { exitCode: blocked.length ? 1 : 0, report, messages };
+  }
+
+  if (!config.autoApplyRootUpgrade) {
+    messages.push(
+      `Root upgrade is a suggestion — run ${quoted} (set autoApplyRootUpgrade to run it from fix --apply)`,
+    );
+    return { exitCode: 0, report: { ...report, title: "Root upgrade suggested" }, messages };
   }
 
   if (blocked.length) {
@@ -252,41 +276,46 @@ async function applyRootUpgrade(
     };
   }
 
-  if (!command) {
-    messages.push("No upgrade version resolved — not writing package.json");
-    return { exitCode: 1, report: { ...report, title: "No upgrade version" }, messages };
-  }
-
   if (opts.skipInstall) {
-    messages.push(`Not writing package.json — run \`${command.display}\``);
+    messages.push(`Not writing package.json — run ${quoted}`);
     return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
   }
 
   const install = opts.install ?? createLiveInstall();
   if (!install.runCommand) {
-    messages.push(`Not writing package.json — run \`${command.display}\``);
+    messages.push(`Not writing package.json — run ${quoted}`);
     return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
   }
 
   const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, group.manifestPath]);
-  const installed = await install.runCommand(cwd, command.file, command.args);
-  if (!installed.ok) {
-    restoreFiles(cwd, snap);
-    messages.push(installed.error ?? `${command.display} failed`);
-    return {
-      exitCode: 1,
-      report: { ...report, title: "VERIFY_FAILED peer conflict" },
-      messages,
-    };
+  for (const command of commands) {
+    const installed = await install.runCommand(cwd, command.file, command.args);
+    if (!installed.ok) {
+      restoreFiles(cwd, snap);
+      messages.push(installed.error ?? `${command.display} failed`);
+      return {
+        exitCode: 1,
+        report: { ...report, title: "VERIFY_FAILED peer conflict" },
+        messages,
+      };
+    }
   }
 
-  if (command.kind === "nx") {
+  if (hasNx) {
+    if (hasInstall) {
+      messages.push(`Installed via ${installCmd!.display} (no override written)`);
+    }
     messages.push(
-      `Started ${command.display} — Nx owns package selection. If it wrote migrations.json, install then \`npx nx migrate --run-migrations\`.`,
+      `Started ${nx!.display} — Nx owns package selection. If it wrote migrations.json, install then \`npx nx migrate --run-migrations\`.`,
     );
     return {
       exitCode: 0,
-      report: { ...report, title: `Nx migrate ${command.args[command.args.length - 1] ?? ""}`.trim() },
+      report: {
+        ...report,
+        title: hasInstall
+          ? `Upgraded via ${pm} then Nx migrate`
+          : `Nx migrate ${nx!.args[nx!.args.length - 1] ?? ""}`.trim(),
+      },
       messages,
       writtenFiles: [group.manifestPath],
     };
@@ -310,7 +339,7 @@ async function applyRootUpgrade(
     };
   }
 
-  messages.push(`Installed via ${command.display} (no override written)`);
+  messages.push(`Installed via ${installCmd!.display} (no override written)`);
   return {
     exitCode: 0,
     report: { ...report, title: `Upgraded via ${pm}` },

@@ -1,5 +1,6 @@
 {
   "upgradeRootThreshold": 3,
+  "autoApplyRootUpgrade": false,
   "defaultReviewDays": 7,
   "metadataPath": "security-metadata.json",
   "impactWarnThreshold": 20,

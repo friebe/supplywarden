@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createStaticAudit } from "../../src/audit/client.js";
+import { createLiveRegistry } from "../../src/registry/verify.js";
 import { runInit } from "../../src/commands/init.js";
 import { runCheck } from "../../src/commands/check.js";
 import { runDoctor } from "../../src/commands/doctor.js";
@@ -60,6 +61,8 @@ describe("runCheck", () => {
     expect(byPkg.lodash?.removableReason).toBe("already-at-patched");
     expect(byPkg.request?.statuses).toContain("REMOVABLE");
     expect(byPkg.request?.removableReason).toBe("not-in-tree");
+    expect(byPkg.debug?.statuses).toContain("REMOVABLE");
+    expect(byPkg.debug?.removableReason).toBe("no-vulnerable-version");
     expect(byPkg.minimist?.status).toBe("DRIFT");
     expect(byPkg.semver?.status).toBe("PENDING_VERIFY");
     expect(byPkg.tar?.status).toBe("VERIFY_FAILED");
@@ -67,6 +70,11 @@ describe("runCheck", () => {
     expect(byPkg.picomatch?.status).toBe("OVERDUE");
     expect(byPkg.picomatch?.dependencyKind).toBe("development");
     expect(byPkg.qs?.dependencyKind).toBe("production");
+    expect(byPkg.ip?.status).toBe("OK");
+    expect(byPkg["follow-redirects"]?.status).toBe("OK");
+    expect(byPkg["follow-redirects"]?.entry.resolution).toMatch(/^verify-keep:/);
+    expect(byPkg["nth-check"]?.weakOverride).toBe(true);
+    expect(byPkg.fsevents?.dependencyKind).toBe("optional");
     expect(byPkg.qs?.suggestedAction).toMatch(/supplywarden why qs/);
     expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden verify lodash --apply/);
     expect(byPkg.request?.suggestedAction).toMatch(/supplywarden verify request --apply/);
@@ -75,6 +83,96 @@ describe("runCheck", () => {
     expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden verify tar/);
     expect(byPkg.tar?.suggestedAction).not.toMatch(/supplywarden why tar/);
     expect(byPkg.ws?.suggestedAction).toMatch(/supplywarden init/);
+    expect(byPkg["nth-check"]?.suggestedAction).toMatch(/fix --apply/);
+  });
+
+  it("kitchen-sink audit labels NEW nx-only upgrade, mixed nx+lodash, and override over threshold", async () => {
+    const result = await runCheck({
+      cwd: fixtureDir("npm-mixed"),
+      enableAudit: true,
+      audit: createStaticAudit([
+        {
+          package: "smol-toml",
+          severity: "high",
+          range: "< 1.4.2",
+          ghsaId: "GHSA-7w7h-prm2-qmvq",
+          patchedVersion: "1.4.2",
+        },
+        {
+          package: "tslib",
+          severity: "high",
+          range: "< 2.4.1",
+          ghsaId: "GHSA-tslb-mixd-demo",
+          patchedVersion: "2.4.1",
+        },
+        {
+          package: "serialize-javascript",
+          severity: "high",
+          range: "< 6.0.2",
+          ghsaId: "GHSA-h9x2-p7j5-2x6r",
+          patchedVersion: "6.0.2",
+        },
+      ]),
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+        async versionsNewerThan(pkg) {
+          if (pkg === "nx") return ["23.2.1", "23.2.5"];
+          if (pkg === "lodash") return ["4.17.22"];
+          return [];
+        },
+        async dependencyRange(pkg, version, dep) {
+          if (dep === "smol-toml" && pkg === "nx") {
+            return version === "23.2.5" ? "^1.4.2" : "^1.3.1";
+          }
+          if (dep === "tslib") {
+            if (pkg === "nx") return version === "23.2.5" ? "^2.4.1" : "2.0.0";
+            if (pkg === "lodash") return version === "4.17.22" ? "^2.4.1" : "2.0.0";
+          }
+          return undefined;
+        },
+      },
+    });
+    const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.entry.package, e]));
+    expect(byPkg["smol-toml"]?.status).toBe("NEW");
+    expect(byPkg["smol-toml"]?.roots).toEqual(["nx"]);
+    expect(byPkg["smol-toml"]?.decision?.strategy).toBe("upgrade");
+    expect(byPkg["smol-toml"]?.decision?.upgradeTargets).toEqual([
+      { name: "nx", from: "23.2.0", to: "23.2.5", skipped: ["23.2.1"] },
+    ]);
+    expect(byPkg["smol-toml"]?.upgradeCommands).toEqual(["npx nx migrate nx@23.2.5"]);
+    expect(byPkg["smol-toml"]?.suggestedAction).toMatch(/nx@23\.2\.0 → 23\.2\.5/);
+    expect(byPkg["smol-toml"]?.suggestedAction).toMatch(/not 23\.2\.1/);
+    expect(result.messages.join("\n")).toMatch(/NEW smol-toml \(lockfile 1\.3\.1\): nx@23\.2\.0 → 23\.2\.5/);
+    expect(toMarkdown(result.report)).toMatch(/## New/);
+    expect(toMarkdown(result.report)).toMatch(/nx@23\.2\.0 → 23\.2\.5 \(not 23\.2\.1/);
+    expect(byPkg.tslib?.status).toBe("NEW");
+    expect(byPkg.tslib?.decision?.strategy).toBe("upgrade");
+    expect(byPkg.tslib?.upgradeCommands).toEqual([
+      "npm install lodash@4.17.22",
+      "npx nx migrate nx@23.2.5",
+    ]);
+    expect(byPkg["serialize-javascript"]?.status).toBe("NEW");
+    expect(byPkg["serialize-javascript"]?.decision?.strategy).toBe("override");
+    expect(byPkg["serialize-javascript"]?.roots?.sort()).toEqual(["ava", "jest", "mocha", "webpack"].sort());
+  });
+
+  it("loads NEW findings from a Dependabot alert file instead of live audit", async () => {
+    const cwd = fixtureDir("npm-mixed");
+    const result = await runCheck({
+      cwd,
+      enableAudit: false,
+      alertPath: join(FIXTURES_ROOT, "alerts/mixed.json"),
+      registry: createLiveRegistry(cwd),
+    });
+    const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.entry.package, e]));
+    expect(byPkg["smol-toml"]?.status).toBe("NEW");
+    expect(byPkg["smol-toml"]?.decision?.upgradeTargets).toEqual([
+      { name: "nx", from: "23.2.0", to: "23.2.5", skipped: ["23.2.1"] },
+    ]);
+    expect(toMarkdown(result.report)).toMatch(/nx@23\.2\.0 → 23\.2\.5 \(not 23\.2\.1/);
+    expect(result.messages.join("\n")).toMatch(/alerts: .*untracked finding/);
   });
 
   it("explains empty fixtures without overrides or metadata", async () => {
@@ -149,12 +247,29 @@ describe("runCheck", () => {
         async getLatestMatching() {
           return "4.21.2";
         },
+        async dependencyRange(pkg, version, dep) {
+          if (pkg === "express" && dep === "qs" && version === "4.21.2") return "6.13.0";
+          if (pkg === "express" && dep === "qs") return "6.5.0";
+          return undefined;
+        },
       },
     });
     const qs = result.report.entries.find((e) => e.status === "NEW" && e.entry.package === "qs");
     expect(qs?.decision?.strategy).toBe("upgrade");
+    expect(qs?.decision?.upgradeTargets?.[0]).toMatchObject({
+      name: "express",
+      from: "4.18.2",
+      to: "4.21.2",
+    });
     expect(qs?.suggestedAction).toMatch(/express@4\.18\.2 → 4\.21\.2/);
+    expect(qs?.suggestedAction).toMatch(/npm install express@4\.21\.2/);
+    expect(qs?.suggestedAction).not.toMatch(/supplywarden fix --apply/);
     expect(qs?.suggestedAction).not.toMatch(/UPGRADE express@4\.18\.2 —/);
+    const html = renderHtml(result.report);
+    expect(html).toMatch(/function upgradeHint/);
+    expect(html).toContain("express@4.18.2");
+    expect(html).toContain("4.21.2");
+    expect(toMarkdown(result.report)).toMatch(/express@4\.18\.2 → 4\.21\.2/);
   });
 
   it("does not flag audit findings covered by an active override", async () => {
@@ -411,6 +526,8 @@ describe("doctor / html / sync", () => {
     expect(md).toMatch(/\| Package \| Status \| Scope \|/);
     expect(md).toMatch(/picomatch@4\.0\.4 · development \| OVERDUE \| development \|/);
     expect(md).toMatch(/qs@6\.11\.2 \| OVERDUE \| production \|/);
+    expect(md).toMatch(/fsevents@2\.3\.3 · optional \| OK \| optional \|/);
+    expect(md).toMatch(/follow-redirects@1\.15\.6 \| OK · verified /);
     expect(actions.some((a: string) => a.includes("supplywarden sync"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden init"))).toBe(true);
     expect(html).toMatch(/function advisoryLinks/);

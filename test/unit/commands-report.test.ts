@@ -34,6 +34,35 @@ function entry(pkg: string, statuses: CheckStatus[], extra: Partial<CheckEntry> 
 describe("nextCommands", () => {
   it("maps each status to the current CLI", () => {
     expect(nextCommands(entry("qs", ["NEW"]))).toEqual(["supplywarden fix --apply"]);
+    expect(
+      nextCommands(
+        entry("qs", ["NEW"], {
+          decision: {
+            strategy: "upgrade",
+            reason: "",
+            scope: { type: "global" },
+          },
+          upgradeCommand: "npm install express@4.21.2",
+        }),
+      ),
+    ).toEqual(["npm install express@4.21.2"]);
+    expect(
+      nextCommands(
+        entry("smol-toml", ["NEW"], {
+          decision: {
+            strategy: "upgrade",
+            reason: "",
+            scope: { type: "global" },
+            upgradeTargets: [
+              { name: "nx", from: "23.2.1", to: "23.2.5" },
+              { name: "lodash", from: "4.17.20", to: "4.17.21" },
+            ],
+          },
+          upgradeCommand: "npm install lodash@4.17.21",
+          upgradeCommands: ["npm install lodash@4.17.21", "npx nx migrate nx@23.2.5"],
+        }),
+      ),
+    ).toEqual(["npm install lodash@4.17.21", "npx nx migrate nx@23.2.5"]);
     expect(nextCommands(entry("qs", ["REMOVABLE"]))).toEqual(["supplywarden verify qs --apply"]);
     expect(nextCommands(entry("lodash", ["RESOLVED", "REMOVABLE"]))).toEqual([
       "supplywarden verify lodash --apply",

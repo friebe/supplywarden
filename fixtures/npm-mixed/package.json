@@ -1,25 +1,41 @@
 {
   "name": "npm-mixed",
   "private": true,
-  "description": "Kitchen-sink fixture: overdue, removable (patched-in-tree + relic not-in-tree), drift, pending_verify, verify_failed, untracked + known vulnerable versions; picomatch is development-only (eslint → picomatch)",
+  "description": "Kitchen-sink: OVERDUE production (qs) + development (picomatch), OK (ip), Ok·verified KEEP (follow-redirects), weak no-op override (nth-check), optional (fsevents), REMOVABLE already-at-patched (lodash) + not-in-tree (request) + no-vulnerable-version (debug), DRIFT (minimist), PENDING_VERIFY (semver), VERIFY_FAILED (tar), UNTRACKED (ws). With audit: NEW upgrade smol-toml (only nx → 23.2.5, not 23.2.1), NEW mixed upgrade tslib (nx+lodash), NEW override serialize-javascript (4 roots > threshold).",
   "dependencies": {
+    "ava": "5.3.1",
     "express": "^4.18.2",
+    "follow-redirects": "1.14.9",
+    "ip": "1.1.8",
+    "jest": "29.7.0",
     "lodash": "4.17.21",
+    "minimist": "1.2.5",
+    "mocha": "10.2.0",
+    "nth-check": "1.0.2",
+    "nx": "23.2.0",
     "semver": "7.5.1",
-    "ws": "8.5.0",
     "tar": "6.2.1",
-    "minimist": "1.2.5"
+    "webpack": "5.88.0",
+    "ws": "8.5.0"
   },
   "devDependencies": {
     "eslint": "8.57.0"
   },
+  "optionalDependencies": {
+    "fsevents": "2.3.2"
+  },
   "overrides": {
-    "qs": "6.11.2",
+    "debug": "4.3.4",
+    "follow-redirects": "1.15.6",
+    "fsevents": "2.3.3",
+    "ip": "2.0.1",
     "lodash": "4.17.21",
-    "semver": "7.5.2",
-    "ws": "8.17.1",
-    "tar": "6.2.1",
+    "nth-check": "^1.0.0",
+    "picomatch": "4.0.4",
+    "qs": "6.11.2",
     "request": "2.88.2",
-    "picomatch": "4.0.4"
+    "semver": "7.5.2",
+    "tar": "6.2.1",
+    "ws": "8.17.1"
   }
 }
