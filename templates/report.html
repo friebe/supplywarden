@@ -135,6 +135,7 @@
       <button type="button" class="chip" data-chip="development">Development</button>
       <button type="button" class="chip" data-chip="cleanup">Cleanup</button>
       <button type="button" class="chip" data-chip="waiting">Waiting</button>
+      <button type="button" class="chip" data-chip="tracked">Tracked</button>
       <input id="filter" type="search" placeholder="Filter…"/>
     </div>
     <div id="sections"></div>
@@ -195,7 +196,7 @@
       if (st.includes('NEW') || st.includes('OVERDUE') || st.includes('VERIFY_FAILED') || st.includes('DRIFT') || st.includes('UNTRACKED')) return 'decide';
       if (st.includes('PENDING_VERIFY')) return 'waiting';
       if (canRemove(e)) return 'cleanup';
-      return 'other';
+      return 'tracked';
     }
     function actionRank(e) {
       const st = statusesOf(e);
@@ -295,11 +296,13 @@
     const decide = sorted.filter((e) => bucket(e) === 'decide');
     const waiting = sorted.filter((e) => bucket(e) === 'waiting');
     const cleanup = sorted.filter((e) => bucket(e) === 'cleanup');
+    const tracked = sorted.filter((e) => bucket(e) === 'tracked');
     const devOnly = sorted.filter((e) => e.dependencyKind === 'development');
     const tally = [
       { chip: 'decide', n: decide.length, label: 'to decide' },
       { chip: 'cleanup', n: cleanup.length, label: 'safe to remove' },
       { chip: 'waiting', n: waiting.length, label: 'waiting' },
+      { chip: 'tracked', n: tracked.length, label: 'tracked' },
       { chip: 'development', n: devOnly.length, label: 'development' }
     ].filter((c) => c.n > 0);
     const cards = document.getElementById('cards');
@@ -312,6 +315,7 @@
       if (chip === 'decide' && bucket(e) !== 'decide') return false;
       if (chip === 'cleanup' && bucket(e) !== 'cleanup') return false;
       if (chip === 'waiting' && bucket(e) !== 'waiting') return false;
+      if (chip === 'tracked' && bucket(e) !== 'tracked') return false;
       if (chip === 'development' && e.dependencyKind !== 'development') return false;
       if (query && !haystack(e).includes(query)) return false;
       return true;
@@ -324,7 +328,8 @@
       const sections = [
         { title: 'Decide this week', items: decide },
         { title: 'Waiting on install', items: waiting },
-        { title: 'Safe to remove', items: cleanup }
+        { title: 'Safe to remove', items: cleanup },
+        { title: 'Tracked', items: tracked }
       ];
       let html = '';
       for (const s of sections) {

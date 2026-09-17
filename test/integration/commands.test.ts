@@ -25,6 +25,9 @@ describe("runInit", () => {
       const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
       expect(meta.entries).toHaveLength(5);
       expect(meta.entries.every((e: { needsReview: boolean }) => e.needsReview)).toBe(true);
+      const created = new Date(meta.entries[0].createdAt).getTime();
+      const reviewBy = new Date(meta.entries[0].reviewBy).getTime();
+      expect(reviewBy - created).toBeGreaterThanOrEqual(6 * 86_400_000);
     });
   });
 
@@ -392,6 +395,8 @@ describe("doctor / html / sync", () => {
     expect(actions.some((a: string) => a.includes("supplywarden verify tar"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden why qs"))).toBe(true);
     expect(html).toMatch(/Decide this week/);
+    expect(html).toMatch(/title: 'Tracked'/);
+    expect(html).toMatch(/data-chip="tracked"/);
     expect(html).toMatch(/<th>Severity<\/th>/);
     expect(html).toMatch(/<th>Scope<\/th>/);
     expect(html).toMatch(/function scopeBadge/);

@@ -75,7 +75,7 @@ File: `.supplywardenrc.json` in the project (example: `.supplywardenrc.example.j
 |-----|---------|--------|
 | `audit.minSeverity` | `"high"` | After `npm`/`pnpm`/`yarn audit`, drop findings below this label. `critical` > `high` > `medium` > `low`. |
 | `upgradeRootThreshold` | `3` | `check` / `fix`: if this many (or fewer) roots pull the vuln package, prefer **upgrade**; more roots → **override**. Upgrade names a **newer** root version than the one installed (`nx@23.3.0 → 23.4.x`). If the root is already latest, fall back to override. Parent specs that still name older versions are a **hint** — `verify <pkg>` tests the drop; live audit decides. |
-| `defaultReviewDays` | `7` | New overrides get `reviewBy` = now + N days. After that, `--strict` fails on high/critical **OVERDUE**. |
+| `defaultReviewDays` | `7` | `init` and `fix --apply` set `reviewBy` = now + N days. After that, `--strict` fails on high/critical **OVERDUE**. |
 | `dateLocale` | `"de"` | CLI and HTML dates: `"de"` (`16.09.2026, 20:12`) or `"en"` (`Sep 16, 2026, 8:12 PM`). `security-metadata.json` stays ISO. |
 | `timeZone` | `"Europe/Berlin"` | Timezone for those displayed dates. |
 | `metadataPath` | `"security-metadata.json"` | Where override records live. |
