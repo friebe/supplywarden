@@ -2,7 +2,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createStaticAudit } from "../../src/audit/client.js";
-import { createLiveRegistry } from "../../src/registry/verify.js";
+import { createStaticInstall } from "../../src/install/client.js";
+import { createLiveRegistry, createOfflineRegistry } from "../../src/registry/verify.js";
 import { runInit } from "../../src/commands/init.js";
 import { runCheck } from "../../src/commands/check.js";
 import { runDoctor } from "../../src/commands/doctor.js";
@@ -10,7 +11,6 @@ import { runFix } from "../../src/commands/fix.js";
 import { runWhy } from "../../src/commands/why.js";
 import { runSync } from "../../src/commands/sync.js";
 import { runVerify } from "../../src/commands/verify.js";
-import { createStaticInstall } from "../../src/install/client.js";
 import { renderHtml } from "../../src/report/html.js";
 import { toMarkdown } from "../../src/report/model.js";
 import { extractExistingOverrides, readPackageJson } from "../../src/metadata/sync.js";
@@ -583,6 +583,7 @@ describe("runVerify", () => {
           { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
         ]),
         install: createStaticInstall(),
+        registry: createOfflineRegistry(),
       });
       expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
       const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
@@ -706,6 +707,7 @@ describe("runVerify", () => {
           { package: "picomatch", severity: "high", range: "< 4.0.3", ghsaId: "GHSA-c2c7-rcm5-vvqj" },
         ]),
         install: createStaticInstall(),
+        registry: createOfflineRegistry(),
       });
       expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
       const after = await runCheck({ cwd: dir, enableAudit: false });
@@ -727,6 +729,7 @@ describe("runVerify", () => {
         skipInstall: true,
         audit: createStaticAudit([], "npm audit failed"),
         install: createStaticInstall(),
+        registry: createOfflineRegistry(),
       });
       expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
     });
@@ -743,6 +746,95 @@ describe("runVerify", () => {
       });
       expect(result.exitCode).toBe(1);
       expect(result.messages.join("\n")).toMatch(/no override for left-pad/);
+    });
+  });
+
+  const expressQsRegistry = createOfflineRegistry(
+    {
+      express: ["4.18.2", "4.18.3", "4.21.2"],
+      qs: ["6.5.0", "6.11.2"],
+    },
+    {
+      express: {
+        "4.18.3": { qs: "6.5.0" },
+        "4.21.2": { qs: "^6.11.2" },
+      },
+    },
+  );
+
+  it("KEEP with few roots suggests a proven root upgrade like check", async () => {
+    await withFixture("npm-overdue", async (dir) => {
+      const result = await runVerify({
+        cwd: dir,
+        package: "qs",
+        skipInstall: true,
+        audit: createStaticAudit([
+          { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
+        ]),
+        install: createStaticInstall(),
+        registry: expressQsRegistry,
+      });
+      const entry = result.report.entries[0]!;
+      expect(entry.verifyOutcome).toBe("KEEP");
+      expect(entry.decision?.strategy).toBe("upgrade");
+      expect(entry.decision?.upgradeTargets).toEqual([
+        { name: "express", from: "4.18.2", to: "4.21.2", skipped: ["4.18.3"] },
+      ]);
+      expect(entry.upgradeCommands).toEqual(["npm install express@4.21.2"]);
+      expect(entry.suggestedAction).toMatch(/npm install express@4\.21\.2/);
+      expect(result.messages.join("\n")).toMatch(/UPGRADE express@4\.18\.2 → 4\.21\.2/);
+    });
+  });
+
+  it("KEEP stays override when roots exceed upgradeRootThreshold", async () => {
+    await withFixture("npm-overdue", async (dir) => {
+      await writeFile(join(dir, ".supplywardenrc.json"), JSON.stringify({ upgradeRootThreshold: 0 }));
+      const result = await runVerify({
+        cwd: dir,
+        package: "qs",
+        skipInstall: true,
+        audit: createStaticAudit([
+          { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
+        ]),
+        install: createStaticInstall(),
+        registry: expressQsRegistry,
+      });
+      expect(result.report.entries[0]!.decision?.strategy).toBe("override");
+      expect(result.report.entries[0]!.upgradeCommands).toBeUndefined();
+      expect(result.messages.join("\n")).not.toMatch(/UPGRADE/);
+    });
+  });
+
+  it("verify --apply runs the KEEP upgrade when autoApplyRootUpgrade is on", async () => {
+    await withFixture("npm-overdue", async (dir) => {
+      await writeFile(
+        join(dir, ".supplywardenrc.json"),
+        JSON.stringify({ autoApplyRootUpgrade: true }),
+      );
+      const calls: string[] = [];
+      const result = await runVerify({
+        cwd: dir,
+        package: "qs",
+        apply: true,
+        audit: createStaticAudit([
+          { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
+        ]),
+        install: {
+          async install() {
+            return { ok: true };
+          },
+          async runCommand(_cwd, file, args) {
+            calls.push(`${file} ${args.join(" ")}`);
+            return { ok: true };
+          },
+        },
+        registry: expressQsRegistry,
+      });
+      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
+      expect(calls).toEqual(["npm install express@4.21.2"]);
+      expect(result.messages.join("\n")).toMatch(/Ran `npm install express@4\.21\.2`/);
+      const pkg = readPackageJson(dir);
+      expect(pkg.overrides).toMatchObject({ qs: "6.11.2" });
     });
   });
 });

@@ -1,15 +1,33 @@
-import { analyzeNpmGraph } from "../graph/npm.js";
-import { firstSafeForcedVersion, stillVulnerable } from "../decision/engine.js";
+import { analyzeNpmGraph, resolvePackageManager } from "../graph/npm.js";
+import {
+  decide,
+  firstSafeForcedVersion,
+  formatUpgradeTarget,
+  formatUpgradeTargets,
+  lookupFromRegistry,
+  resolveUpgradeDecision,
+  stillVulnerable,
+} from "../decision/engine.js";
 import { listOverridesToProbe } from "./check.js";
 import { specFloorSafe } from "../util/semver-spec.js";
 import { readMetadata, writeMetadata } from "../metadata/store.js";
 import { deleteOverrideFromManifest, syncOverridesToPackageJson } from "../metadata/sync.js";
 import { createLiveAudit, filterFindings } from "../audit/client.js";
 import { createLiveInstall } from "../install/client.js";
+import { createLiveRegistry } from "../registry/verify.js";
+import { quotedUpgradeCommands, rootUpgradeCommands, type RootUpgradeCommand } from "../fix/upgrade-command.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { addDaysIso, nowIso } from "../util/time.js";
 import { actorName, loadConfig } from "../config.js";
-import type { AuditClient, CheckEntry, CommandResult, InstallClient, SupplywardenConfig } from "../types.js";
+import type {
+  AuditClient,
+  CheckEntry,
+  CommandResult,
+  Decision,
+  InstallClient,
+  RegistryClient,
+  SupplywardenConfig,
+} from "../types.js";
 
 function leftoverHeuristic(entry: CheckEntry): boolean {
   return (
@@ -81,6 +99,7 @@ export async function runVerify(opts: {
   skipInstall?: boolean;
   audit?: AuditClient;
   install?: InstallClient;
+  registry?: RegistryClient;
 }): Promise<CommandResult> {
   const cwd = opts.cwd;
   const config = loadConfig(cwd);
@@ -125,6 +144,8 @@ export async function runVerify(opts: {
   let needResync = false;
   const failures: Array<{ candidate: CheckEntry; error: string }> = [];
   const keeps: Array<{ candidate: CheckEntry; why: string }> = [];
+  const keepUpgrades: RootUpgradeCommand[] = [];
+  const registry = opts.registry ?? createLiveRegistry(cwd);
 
   for (const candidate of candidates) {
     restoreFiles(cwd, snap);
@@ -197,20 +218,54 @@ export async function runVerify(opts: {
         : auditFailed && stillVuln.length
           ? `audit failed and lockfile still has version(s) matching stored advisories: ${stillVuln.join(", ")}`
           : `audit failed: ${auditResult.error}`;
+      const decision = await resolveUpgradeDecision(
+        decide({ graph, advisories: candidate.entry.advisories, config }),
+        lookupFromRegistry(registry),
+        {
+          vulnPackage: candidate.entry.package,
+          advisories: candidate.entry.advisories,
+          chains: graph.chains,
+        },
+      );
+      const pm = resolvePackageManager(cwd);
+      const upgradeCmds =
+        decision.strategy === "upgrade"
+          ? rootUpgradeCommands(pm, decision.upgradeTargets ?? [])
+          : [];
+      const upgradeDisplays = upgradeCmds.map((c) => c.display);
+      const suggestedAction = keepSuggestedAction({
+        pkg: candidate.entry.package,
+        why,
+        weak,
+        forced: candidate.entry.forcedVersion,
+        need,
+        decision,
+        roots: graph.roots.map((r) => r.name),
+        upgradeDisplays,
+        autoApply: config.autoApplyRootUpgrade,
+        threshold: config.upgradeRootThreshold,
+      });
+      for (const command of upgradeCmds) {
+        if (!keepUpgrades.some((c) => c.display === command.display)) keepUpgrades.push(command);
+      }
       probed.push({
         ...candidate,
         status: "OK",
         statuses: ["OK"],
         verifyOutcome: "KEEP",
         weakOverride: weak,
-        suggestedAction: weak
-          ? `Override ${candidate.entry.forcedVersion} does not close the advisory (need ${need ?? "a patched version"}). Keeping it is a no-op — run \`supplywarden fix --apply\`, not verify --apply`
-          : `Keep override — ${why}; inspect with \`supplywarden why ${candidate.entry.package}\``,
+        decision,
+        roots: graph.roots.map((r) => r.name),
+        suggestedAction,
+        upgradeCommand: config.autoApplyRootUpgrade || !upgradeDisplays.length ? undefined : upgradeDisplays[0],
+        upgradeCommands: config.autoApplyRootUpgrade || !upgradeDisplays.length ? undefined : upgradeDisplays,
       });
       messages.push(
-        weak
-          ? `${candidate.entry.package}: KEEP (weak override ${candidate.entry.forcedVersion}; run fix --apply)`
-          : `${candidate.entry.package}: KEEP (${why})`,
+        upgradeDisplays.length
+          ? `${candidate.entry.package}: KEEP (${why}); UPGRADE ${formatUpgradeTargets(decision) || graph.roots.map((r) => r.name).join(", ")} — ${upgradeDisplays.join(" then ")}`
+          : weak
+            ? `${candidate.entry.package}: KEEP (weak override ${candidate.entry.forcedVersion}; run fix --apply)`
+            : `${candidate.entry.package}: KEEP (${why})`,
       );
       keeps.push({ candidate, why });
     } else {
@@ -241,6 +296,31 @@ export async function runVerify(opts: {
       written = [config.metadataPath];
     }
   }
+  if (
+    opts.apply &&
+    config.autoApplyRootUpgrade &&
+    !opts.skipInstall &&
+    keepUpgrades.length &&
+    install.runCommand
+  ) {
+    const quoted = quotedUpgradeCommands(keepUpgrades);
+    let upgradeOk = true;
+    for (const command of keepUpgrades) {
+      const ran = await install.runCommand(cwd, command.file, command.args);
+      if (!ran.ok) {
+        upgradeOk = false;
+        messages.push(ran.error ?? `${command.display} failed`);
+        break;
+      }
+    }
+    if (upgradeOk) {
+      messages.push(`Ran ${quoted} (override kept until the next check)`);
+    }
+  } else if (opts.apply && !config.autoApplyRootUpgrade && keepUpgrades.length) {
+    messages.push(
+      `Root upgrade is a suggestion — run ${quotedUpgradeCommands(keepUpgrades)} (set autoApplyRootUpgrade to run it from verify --apply)`,
+    );
+  }
   const confirmed = probed.filter((p) => p.verifyOutcome === "CONFIRMED_REMOVABLE");
   if (opts.apply && confirmed.length) {
     const next = readMetadata(cwd, config);
@@ -257,7 +337,7 @@ export async function runVerify(opts: {
     writeMetadata(cwd, config, next);
     written = [config.metadataPath, "package.json"];
     messages.push(`Applied ${confirmed.length} confirmed removal(s)`);
-  } else if (opts.apply && !confirmed.length) {
+  } else if (opts.apply && !confirmed.length && !keepUpgrades.length) {
     messages.push(
       "verify --apply: nothing confirmed as removable (install/audit kept every candidate). See KEEP/VERIFY_FAILED above.",
     );
@@ -284,4 +364,38 @@ export async function runVerify(opts: {
       entries: probed,
     },
   };
+}
+
+function keepSuggestedAction(opts: {
+  pkg: string;
+  why: string;
+  weak: boolean;
+  forced: string;
+  need?: string;
+  decision: Decision;
+  roots: string[];
+  upgradeDisplays: string[];
+  autoApply: boolean;
+  threshold: number;
+}): string {
+  if (opts.decision.strategy === "upgrade") {
+    const what =
+      formatUpgradeTargets(opts.decision) ||
+      opts.decision.upgradeTargets?.map(formatUpgradeTarget).join(", ") ||
+      opts.roots.join(", ") ||
+      opts.pkg;
+    const cmdText = opts.upgradeDisplays.map((c) => `\`${c}\``).join(" then ");
+    const n = opts.roots.length || 1;
+    if (cmdText && !opts.autoApply) {
+      return `Keep override — ${opts.why}. ${n} root(s) ≤ threshold ${opts.threshold}: UPGRADE ${what} — run ${cmdText}`;
+    }
+    if (cmdText && opts.autoApply) {
+      return `Keep override — ${opts.why}. UPGRADE ${what} — run \`supplywarden verify ${opts.pkg} --apply\` (starts ${cmdText})`;
+    }
+    return `Keep override — ${opts.why}. ${n} root(s) ≤ threshold ${opts.threshold}: prefer upgrading ${opts.roots.join(", ") || what}`;
+  }
+  if (opts.weak) {
+    return `Override ${opts.forced} does not close the advisory (need ${opts.need ?? "a patched version"}). Keeping it is a no-op — run \`supplywarden fix --apply\`, not verify --apply`;
+  }
+  return `Keep override — ${opts.why}; inspect with \`supplywarden why ${opts.pkg}\``;
 }

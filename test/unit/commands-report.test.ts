@@ -79,6 +79,19 @@ describe("nextCommands", () => {
     expect(nextCommands({ ...entry("picomatch", ["REMOVABLE"]), verifyOutcome: "KEEP" })).toEqual([
       "supplywarden why picomatch",
     ]);
+    expect(
+      nextCommands({
+        ...entry("qs", ["OK"]),
+        verifyOutcome: "KEEP",
+        decision: {
+          strategy: "upgrade",
+          reason: "",
+          scope: { type: "global" },
+          upgradeTargets: [{ name: "express", from: "4.18.2", to: "4.21.2" }],
+        },
+        upgradeCommands: ["npm install express@4.21.2"],
+      }),
+    ).toEqual(["npm install express@4.21.2"]);
     expect(nextCommands({ ...entry("picomatch", ["OK"]), weakOverride: true })).toEqual([
       "supplywarden fix --apply",
     ]);

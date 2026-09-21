@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import type { SupplywardenConfig } from "./types.js";
 import { DEFAULT_TIME_ZONE, parseDateLocale, parseTimeZone } from "./util/time.js";
@@ -60,11 +61,24 @@ export function loadConfig(cwd: string): SupplywardenConfig {
   }
 }
 
+function envActor(): string | undefined {
+  for (const key of ["SUPPLYWARDEN_USER", "VULNFIX_USER", "USER", "USERNAME", "LOGNAME"] as const) {
+    const value = process.env[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function osActor(): string | undefined {
+  try {
+    const name = userInfo().username?.trim();
+    return name || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Who wrote the metadata row: env override, else the OS login of this CLI process. */
 export function actorName(): string {
-  return (
-    process.env.SUPPLYWARDEN_USER ??
-    process.env.VULNFIX_USER ??
-    process.env.USER ??
-    "unknown"
-  );
+  return envActor() ?? osActor() ?? "unknown";
 }

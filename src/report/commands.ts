@@ -25,6 +25,11 @@ export function nextCommands(e: CheckEntry): string[] {
     return [`supplywarden verify ${pkg}`];
   }
   if (e.verifyOutcome === "KEEP") {
+    if (e.decision?.strategy === "upgrade") {
+      if (e.upgradeCommands?.length) return e.upgradeCommands;
+      if (e.upgradeCommand) return [e.upgradeCommand];
+      return [`supplywarden verify ${pkg} --apply`];
+    }
     if (e.weakOverride) return ["supplywarden fix --apply"];
     return [`supplywarden why ${pkg}`];
   }
