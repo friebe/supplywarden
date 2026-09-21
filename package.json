@@ -40,7 +40,8 @@
   "packageManager": "pnpm@9.15.9",
   "dependencies": {
     "commander": "^12.1.0",
-    "semver": "^7.6.3"
+    "semver": "^7.6.3",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

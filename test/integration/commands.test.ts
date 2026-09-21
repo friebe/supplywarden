@@ -320,6 +320,18 @@ describe("runWhy / analyze", () => {
     expect(result.messages.join("\n")).toMatch(/express/);
   });
 
+  it("finds express as root for qs in a pnpm lockfile", () => {
+    const result = runWhy({ cwd: fixtureDir("pnpm-simple"), package: "qs" });
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(/express/);
+  });
+
+  it("finds express as root for qs in a yarn lockfile", () => {
+    const result = runWhy({ cwd: fixtureDir("yarn-simple"), package: "qs" });
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(/express/);
+  });
+
   it("labels picomatch as development-only in npm-mixed", () => {
     const result = runWhy({ cwd: fixtureDir("npm-mixed"), package: "picomatch" });
     expect(result.exitCode).toBe(0);

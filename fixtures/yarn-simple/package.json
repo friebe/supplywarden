@@ -1,0 +1,7 @@
+{
+  "name": "yarn-simple",
+  "private": true,
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

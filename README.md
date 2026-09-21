@@ -28,7 +28,7 @@ npx supplywarden sync                 # metadata → package.json if someone edi
 |---------|-----|
 | `doctor` | PATH, lockfile, metadata. No CVE scan. |
 | `init` | Import existing overrides into `security-metadata.json`. |
-| `check` | Audit, triage NEW (upgrade vs override), say if overrides are still needed. `--strict` fails CI on overdue/drift/new/untracked. Optional Dependabot JSON instead of live audit. |
+| `check` | Audit, triage NEW (upgrade vs override), say if overrides are still needed. `--strict` fails CI on overdue/drift/new/untracked. Optional Dependabot JSON instead of live audit. Roots/chains come from the lockfile of the detected package manager (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`). |
 | `fix --apply` | Write **new** findings: override into `package.json` + metadata. Root upgrades are **suggested** as `npm install` / `pnpm add` / `yarn add` to the next version (`npx nx migrate` only if the root is `nx`). They run from this command only if `autoApplyRootUpgrade` is true. No file → audit; or pass a Dependabot JSON. Does **not** drop REMOVABLE. |
 | `verify [pkg] [--apply]` | Temporarily drop an override, `install` + `audit`, see if the vuln comes back. No pkg → all **REMOVABLE** leftovers. With a pkg → that override even if `check` still lists it as needed. Without `--apply` always restore; with `--apply` keep the drop only if confirmed. A **KEEP** uses the same upgrade-vs-override triage as `check` (`upgradeRootThreshold`, proven `to`). Root upgrade is a suggestion unless `autoApplyRootUpgrade` is true. |
 | `sync` | Rewrite `package.json` overrides from metadata. |

@@ -5,6 +5,9 @@ Mini projects for testing supplywarden without `npm link` into real repos.
 | Fixture | Scenario |
 |---------|----------|
 | `npm-simple` | express → qs@6.5.0 |
+| `pnpm-simple` | Same tree in `pnpm-lock.yaml` (v9 snapshots) |
+| `yarn-simple` | Same tree in classic `yarn.lock` |
+| `yarn-berry-simple` | Same tree in Yarn Berry `yarn.lock` |
 | `npm-five-overrides` | 5 overrides in package.json |
 | `npm-removable` | Override, vuln already gone |
 | `npm-overdue` | reviewBy expired + HIGH |

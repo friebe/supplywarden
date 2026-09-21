@@ -1,0 +1,26 @@
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      express:
+        specifier: ^4.18.2
+        version: 4.18.2
+
+packages:
+  body-parser@1.20.1:
+    resolution: {integrity: sha512-fake}
+  express@4.18.2:
+    resolution: {integrity: sha512-fake}
+  qs@6.5.0:
+    resolution: {integrity: sha512-fake}
+
+snapshots:
+  body-parser@1.20.1:
+    dependencies:
+      qs: 6.5.0
+  express@4.18.2:
+    dependencies:
+      body-parser: 1.20.1
+      qs: 6.5.0
+  qs@6.5.0: {}

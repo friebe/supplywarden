@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DependencyChain, DependencyKind, GraphAnalysis, PackageManager, RootPackage } from "../types.js";
+import type { DependencyChain, GraphAnalysis, PackageManager, RootPackage } from "../types.js";
+import { dependencyKindLabel, inferDependencyKind, mergeDependencyKind } from "./kind.js";
+import { emptyGraph } from "./flat.js";
+import { analyzePnpmGraph, hasPnpmLock } from "./pnpm.js";
+import { analyzeYarnGraph, hasYarnLock } from "./yarn.js";
+
+export { dependencyKindLabel, inferDependencyKind, mergeDependencyKind };
 
 type LockPackage = {
   version?: string;
@@ -48,6 +54,16 @@ function allDeps(meta: LockPackage | undefined): Record<string, string> {
 }
 
 export function analyzeNpmGraph(cwd: string, pkgName: string): GraphAnalysis {
+  const pm = detectPackageManager(cwd);
+  if (pm === "pnpm" && hasPnpmLock(cwd)) return analyzePnpmGraph(cwd, pkgName);
+  if (pm === "yarn" && hasYarnLock(cwd)) return analyzeYarnGraph(cwd, pkgName);
+  if (existsSync(join(cwd, "package-lock.json"))) return analyzeNpmLockGraph(cwd, pkgName);
+  if (hasPnpmLock(cwd)) return analyzePnpmGraph(cwd, pkgName);
+  if (hasYarnLock(cwd)) return analyzeYarnGraph(cwd, pkgName);
+  return emptyGraph(pkgName);
+}
+
+function analyzeNpmLockGraph(cwd: string, pkgName: string): GraphAnalysis {
   const lock = loadLockfile(cwd);
   if (!lock?.packages) {
     return { package: pkgName, versions: [], inTree: false, roots: [], chains: [], dependerRanges: [] };
@@ -154,63 +170,6 @@ export function analyzeNpmGraph(cwd: string, pkgName: string): GraphAnalysis {
         })
       : undefined,
   };
-}
-
-type LockFlags = {
-  dev?: boolean;
-  optional?: boolean;
-  devOptional?: boolean;
-};
-
-export function inferDependencyKind(opts: {
-  pkgName: string;
-  copies: LockFlags[];
-  rootNames: string[];
-  rootDependencies?: Record<string, string>;
-  rootDevDependencies?: Record<string, string>;
-  rootOptionalDependencies?: Record<string, string>;
-}): DependencyKind {
-  const prod = opts.rootDependencies ?? {};
-  const dev = opts.rootDevDependencies ?? {};
-  const opt = opts.rootOptionalDependencies ?? {};
-  const inProd = (name: string) => name in prod;
-  const inDev = (name: string) => name in dev;
-  const inOpt = (name: string) => name in opt;
-
-  if (inProd(opts.pkgName) || opts.rootNames.some(inProd)) return "production";
-
-  if (opts.copies.length) {
-    const allDev = opts.copies.every((c) => c.dev === true);
-    const allOpt = opts.copies.every((c) => c.optional === true || c.devOptional === true);
-    const anyUnflagged = opts.copies.some((c) => !c.dev && !c.optional && !c.devOptional);
-    if (allDev) return "development";
-    if (allOpt) return "optional";
-    if (anyUnflagged && (opts.rootNames.length === 0 || opts.rootNames.some(inProd))) {
-      return "production";
-    }
-  }
-
-  if (opts.rootNames.length > 0 && opts.rootNames.every(inOpt) && !opts.rootNames.some(inProd)) {
-    return "optional";
-  }
-  if (inDev(opts.pkgName) || (opts.rootNames.length > 0 && opts.rootNames.every(inDev))) {
-    return "development";
-  }
-  if (inOpt(opts.pkgName)) return "optional";
-  return "production";
-}
-
-export function dependencyKindLabel(kind?: DependencyKind): string {
-  if (kind === "development" || kind === "optional") return kind;
-  return "";
-}
-
-export function mergeDependencyKind(a?: DependencyKind, b?: DependencyKind): DependencyKind | undefined {
-  if (!a) return b;
-  if (!b) return a;
-  if (a === "production" || b === "production") return "production";
-  if (a === b) return a;
-  return "production";
 }
 
 function stripAtVersion(segment: string): string {
