@@ -255,6 +255,9 @@
       return '';
     }
     function upgradeHint(e) {
+      if (e.decision?.strategy === 'wait' || (e.entry && e.entry.strategy === 'wait')) {
+        return '<div class="upgrade">WAIT — no override this cycle</div>';
+      }
       if (!e.decision || e.decision.strategy !== 'upgrade') return '';
       const parts = (e.decision.upgradeTargets || []).map(formatUpgradeTarget).filter(Boolean);
       if (!parts.length) return '';

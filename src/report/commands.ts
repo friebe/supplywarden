@@ -9,6 +9,7 @@ export function nextCommands(e: CheckEntry): string[] {
       if (e.upgradeCommands?.length) return e.upgradeCommands;
       if (e.upgradeCommand) return [e.upgradeCommand];
     }
+    if (e.decision?.strategy === "wait") return ["supplywarden fix --apply"];
     return ["supplywarden fix --apply"];
   }
   if (e.weakOverride && !e.auditClear) return ["supplywarden fix --apply"];
@@ -40,6 +41,7 @@ export function nextCommands(e: CheckEntry): string[] {
     return [`supplywarden verify ${pkg} --apply`];
   }
   if (e.auditClear) return [`supplywarden verify ${pkg}`];
+  if (e.entry.strategy === "wait") return [`supplywarden why ${pkg}`];
   if (e.weakOverride) return ["supplywarden fix --apply"];
   if (st.includes("OVERDUE") || st.includes("STALE")) return [`supplywarden why ${pkg}`];
   if (pkg) return [`supplywarden verify ${pkg}`];

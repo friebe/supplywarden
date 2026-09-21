@@ -3,9 +3,12 @@ import type {
   Advisory,
   Decision,
   DependencyChain,
+  DependencyKind,
   GraphAnalysis,
   OverrideScope,
   RegistryClient,
+  Severity,
+  Strategy,
   SupplywardenConfig,
 } from "../types.js";
 import { inferSafeFloorFromVulnerableRange } from "../util/vuln-range.js";
@@ -22,15 +25,34 @@ export type UpgradeProofContext = {
   vulnPackage: string;
   advisories: Advisory[];
   chains: DependencyChain[];
+  dependencyKind?: DependencyKind;
 };
 
 export function recommend(input: {
   rootCount: number;
   threshold: number;
   canUpgradeRoots: boolean;
-}): "upgrade" | "override" {
+  kind?: DependencyKind;
+  severity?: Severity;
+}): Strategy {
   if (input.canUpgradeRoots && input.rootCount <= input.threshold) return "upgrade";
+  if (shouldWait(input.kind, input.severity)) return "wait";
   return "override";
+}
+
+/** Dev/optional trees: don't pin or migrate unless the advisory is critical. */
+export function shouldWait(kind?: DependencyKind, severity?: Severity): boolean {
+  if (severity === "critical") return false;
+  return kind === "development" || kind === "optional";
+}
+
+function maxAdvisorySeverity(advisories: Advisory[]): Severity {
+  let best: Severity = "unknown";
+  const rank: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1, unknown: 0 };
+  for (const advisory of advisories) {
+    if (rank[advisory.severity] > rank[best]) best = advisory.severity;
+  }
+  return best;
 }
 
 export function decide(opts: {
@@ -40,11 +62,15 @@ export function decide(opts: {
 }): Decision {
   const forcedVersion = firstSafeForcedVersion(opts.advisories);
   const rootCount = opts.graph.roots.length || 1;
+  const kind = opts.graph.dependencyKind;
+  const severity = maxAdvisorySeverity(opts.advisories);
   const canUpgrade = Boolean(forcedVersion) && rootCount <= opts.config.upgradeRootThreshold;
   const strategy = recommend({
     rootCount,
     threshold: opts.config.upgradeRootThreshold,
     canUpgradeRoots: canUpgrade,
+    kind,
+    severity,
   });
 
   const scope: OverrideScope =
@@ -59,6 +85,15 @@ export function decide(opts: {
       forcedVersion,
       scope,
       upgradeTargets: opts.graph.roots.map((r) => ({ name: r.name, from: r.version })),
+    };
+  }
+
+  if (strategy === "wait") {
+    return {
+      strategy: "wait",
+      reason: `${kind ?? "non-production"} tree${severity !== "unknown" ? ` (${severity})` : ""}; ${rootCount} root(s) — wait until reviewBy rather than override or upgrade`,
+      forcedVersion,
+      scope,
     };
   }
 
@@ -129,6 +164,7 @@ export async function resolveUpgradeDecision(
   lookup: UpgradeLookup = {},
   proof?: UpgradeProofContext,
 ): Promise<Decision> {
+  if (decision.strategy === "wait") return decision;
   if (decision.strategy !== "upgrade" || !decision.upgradeTargets?.length) return decision;
   if (!hasLookup(lookup)) return decision;
 
@@ -160,6 +196,16 @@ export async function resolveUpgradeDecision(
 
   if (lookedUpAny && decision.forcedVersion) {
     const installed = targets.map((t) => `${t.name}@${t.from ?? "?"}`).join(", ");
+    const kind = proof?.dependencyKind;
+    const severity = proof ? maxAdvisorySeverity(proof.advisories) : undefined;
+    if (shouldWait(kind, severity)) {
+      return {
+        strategy: "wait",
+        reason: `${installed} has no proven version that closes ${proof?.vulnPackage ?? "the advisory"} — wait (${kind}) rather than override`,
+        forcedVersion: decision.forcedVersion,
+        scope: decision.scope,
+      };
+    }
     const reason = hadCandidate
       ? `${installed} has no proven version that closes ${proof?.vulnPackage ?? "the advisory"} — override ${decision.forcedVersion}`
       : `${installed} already at latest published version; root upgrade cannot go higher — override ${decision.forcedVersion}`;

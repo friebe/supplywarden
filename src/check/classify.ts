@@ -82,7 +82,7 @@ export function classifyEntry(
   }
 
   const inPackageJson = overridePresent(cwd, entry);
-  if (entry.status === "active" && !inPackageJson) {
+  if (entry.status === "active" && !inPackageJson && entry.strategy !== "wait") {
     statuses.push("DRIFT");
     issues.push({
       code: "OK",
@@ -258,6 +258,9 @@ function suggest(
       return `No longer in the lockfile / no longer vulnerable — run \`supplywarden verify ${pkg} --apply\``;
     case "OVERDUE":
       if (hold?.weak) return holdingOverrideAction(pkg, roots, hold);
+      if (entry.strategy === "wait") {
+        return `Wait expired — decide upgrade or override. Run \`supplywarden why ${pkg}\` then \`supplywarden fix --apply\``;
+      }
       return `Review ${daysOverdue(entry.reviewBy, now)}d overdue — run \`supplywarden why ${pkg}\``;
     case "DRIFT":
       return "package.json drifted — run `supplywarden sync`";
@@ -272,6 +275,9 @@ function suggest(
     case "STALE":
       return `Override is stale — run \`supplywarden why ${pkg}\``;
     default:
+      if (entry.strategy === "wait") {
+        return `Waiting — no override this cycle. Re-open with \`supplywarden why ${pkg}\` or wait until reviewBy`;
+      }
       return holdingOverrideAction(pkg, roots, hold);
   }
 }

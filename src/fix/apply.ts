@@ -40,6 +40,12 @@ export type ApplyOptions = {
 export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   const messages: string[] = [];
   const { cwd, config, group, graph, decision } = opts;
+  const reportEarly = baseReport(opts, [], "Pre-apply validation");
+
+  if (decision.strategy === "wait") {
+    return applyWait(opts, reportEarly);
+  }
+
   const forcedVersion = decision.forcedVersion ?? group.forcedVersion;
 
   if (!forcedVersion) {
@@ -186,6 +192,50 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     report: { ...report, title: `Applied ${group.package}@${forcedVersion}` },
     messages,
     writtenFiles: [config.metadataPath, "package.json"],
+  };
+}
+
+function applyWait(opts: ApplyOptions, report: ReportModel): CommandResult {
+  const { cwd, config, group, graph, decision } = opts;
+  const reviewBy = addDaysIso(config.defaultReviewDays);
+  const messages = [
+    decision.reason,
+    opts.apply
+      ? `Recorded WAIT for ${group.package} until ${reviewBy} (no override written)`
+      : `WAIT: no override/upgrade this cycle — pass --apply to record until ${reviewBy}`,
+  ];
+  if (!opts.apply) {
+    return { exitCode: 0, report: { ...report, title: "WAIT" }, messages };
+  }
+
+  const metadata = readMetadata(cwd, config);
+  const duplicate = findDuplicate(metadata, group.package, group.advisories[0]?.ghsaId);
+  const entry: MetadataEntry = {
+    id: duplicate?.id ?? newEntryId(),
+    status: "active",
+    package: group.package,
+    forcedVersion: decision.forcedVersion ?? group.forcedVersion ?? "?",
+    scope: decision.scope,
+    advisories: group.advisories,
+    reason: decision.reason,
+    strategy: "wait",
+    rootPackages: graph.roots.map((r) => r.name),
+    dependencyChains: graph.chains.map((c) => c.path.join(" → ")),
+    packageManager: resolvePackageManager(cwd),
+    manifestPath: group.manifestPath,
+    createdAt: duplicate?.createdAt ?? nowIso(),
+    createdBy: actorName(),
+    reviewBy,
+    reviewReason: "Wait — no override/upgrade this cycle",
+    needsReview: false,
+  };
+  const { metadata: next } = dedupeOrSupersede(metadata, entry);
+  writeMetadata(cwd, config, next);
+  return {
+    exitCode: 0,
+    report: { ...report, title: `WAIT ${group.package}` },
+    messages,
+    writtenFiles: [config.metadataPath],
   };
 }
 

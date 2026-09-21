@@ -78,10 +78,16 @@ export async function runFix(opts: {
     const graph = analyzeNpmGraph(cwd, group.package);
     group.installedVersion = graph.versions[0];
     const registry = opts.registry ?? createLiveRegistry(cwd);
+    const kind = graph.dependencyKind;
     const decision = await resolveUpgradeDecision(
       decide({ graph, advisories: group.advisories, config }),
       lookupFromRegistry(registry),
-      { vulnPackage: group.package, advisories: group.advisories, chains: graph.chains },
+      {
+        vulnPackage: group.package,
+        advisories: group.advisories,
+        chains: graph.chains,
+        dependencyKind: kind,
+      },
     );
     const result = await applyFix({
       cwd,

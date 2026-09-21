@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -280,5 +281,42 @@ describe("applyFix root upgrade", () => {
       { file: "npm", args: ["install", "lodash@4.17.21"] },
       { file: "npx", args: ["nx", "migrate", "nx@23.4.1"] },
     ]);
+  });
+
+  it("records wait in metadata and does not write an override", async () => {
+    const cwd = await nxProject();
+    const waitDecision = {
+      strategy: "wait" as const,
+      reason: "development tree",
+      forcedVersion: "1.4.2",
+      scope: { type: "global" as const },
+    };
+    const dry = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group,
+      graph,
+      decision: waitDecision,
+      apply: false,
+    });
+    expect(dry.messages.join("\n")).toMatch(/WAIT/);
+    expect(existsSync(join(cwd, "security-metadata.json"))).toBe(false);
+
+    const applied = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group,
+      graph,
+      decision: waitDecision,
+      apply: true,
+    });
+    expect(applied.exitCode).toBe(0);
+    expect(applied.writtenFiles).toEqual(["security-metadata.json"]);
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as { overrides?: unknown };
+    expect(pkg.overrides).toBeUndefined();
+    const meta = JSON.parse(await readFile(join(cwd, "security-metadata.json"), "utf8")) as {
+      entries: Array<{ strategy: string; status: string }>;
+    };
+    expect(meta.entries[0]).toMatchObject({ strategy: "wait", status: "active" });
   });
 });

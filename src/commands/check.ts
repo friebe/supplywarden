@@ -223,6 +223,9 @@ function formatNewFindingMessage(entry: CheckEntry): string {
       ? `NEW ${pkg} (lockfile ${installed}): ${bump} — ${cmds}`
       : `NEW ${pkg} (lockfile ${installed}): ${bump}`;
   }
+  if (entry.decision?.strategy === "wait") {
+    return `NEW ${pkg} (lockfile ${installed}): WAIT — no override/upgrade this cycle`;
+  }
   return `NEW ${pkg} (lockfile ${installed}): OVERRIDE ${pkg}@${entry.entry.forcedVersion}`;
 }
 
@@ -250,6 +253,9 @@ function newFindingAction(
     }
     return `New ${sev}: UPGRADE ${what} — run \`supplywarden fix --apply\``;
   }
+  if (decision.strategy === "wait") {
+    return `New ${sev}: WAIT — no override or root upgrade this cycle. \`supplywarden fix --apply\` records the wait until reviewBy`;
+  }
   const ver = decision.forcedVersion ?? group.forcedVersion;
   if (!ver || !specFloorSafe(ver, group.advisories)) {
     return `New ${sev}: ${group.package} has no safe override version — inspect with \`supplywarden why ${group.package}\` (not \`fix --apply\`)`;
@@ -265,14 +271,14 @@ async function entryFromAuditGroup(
   registry?: RegistryClient,
 ): Promise<CheckEntry> {
   const graph = analyzeNpmGraph(cwd, group.package);
+  const kind = mergeDependencyKind(group.dependencyKind, graph.dependencyKind);
   const decision = await resolveUpgradeDecision(
-    decide({ graph, advisories: group.advisories, config }),
+    decide({ graph: { ...graph, dependencyKind: kind }, advisories: group.advisories, config }),
     lookupFromRegistry(registry),
-    { vulnPackage: group.package, advisories: group.advisories, chains: graph.chains },
+    { vulnPackage: group.package, advisories: group.advisories, chains: graph.chains, dependencyKind: kind },
   );
   const roots = graph.roots.map((r) => r.name);
   const chains = graph.chains.map((c) => c.path.join(" → "));
-  const kind = mergeDependencyKind(group.dependencyKind, graph.dependencyKind);
   const pm = resolvePackageManager(cwd);
   const upgradeCmds =
     decision.strategy === "upgrade"
@@ -295,7 +301,10 @@ async function entryFromAuditGroup(
     createdAt: nowIso(),
     createdBy: "audit",
     reviewBy: nowIso(),
-    reviewReason: "New audit finding – run fix --apply to track",
+    reviewReason:
+      decision.strategy === "wait"
+        ? "Wait — no override/upgrade this cycle; re-open at reviewBy"
+        : "New audit finding – run fix --apply to track",
     needsReview: true,
   };
   return {

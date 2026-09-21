@@ -87,6 +87,8 @@ export function toMarkdown(report: ReportModel): string {
           const bump = formatUpgradeTargets(e.decision);
           if (bump) lines.push(`  - ${bump}`);
         }
+      } else if (e.decision?.strategy === "wait") {
+        lines.push("  - WAIT — no override/upgrade this cycle");
       } else {
         lines.push(`  - OVERRIDE ${e.entry.package}@${e.decision?.forcedVersion ?? e.entry.forcedVersion}`);
       }

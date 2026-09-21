@@ -225,6 +225,7 @@ export async function runVerify(opts: {
           vulnPackage: candidate.entry.package,
           advisories: candidate.entry.advisories,
           chains: graph.chains,
+          dependencyKind: graph.dependencyKind,
         },
       );
       const pm = resolvePackageManager(cwd);
@@ -393,6 +394,9 @@ function keepSuggestedAction(opts: {
       return `Keep override — ${opts.why}. UPGRADE ${what} — run \`supplywarden verify ${opts.pkg} --apply\` (starts ${cmdText})`;
     }
     return `Keep override — ${opts.why}. ${n} root(s) ≤ threshold ${opts.threshold}: prefer upgrading ${opts.roots.join(", ") || what}`;
+  }
+  if (opts.decision.strategy === "wait") {
+    return `Keep override — ${opts.why}; inspect with \`supplywarden why ${opts.pkg}\``;
   }
   if (opts.weak) {
     return `Override ${opts.forced} does not close the advisory (need ${opts.need ?? "a patched version"}). Keeping it is a no-op — run \`supplywarden fix --apply\`, not verify --apply`;

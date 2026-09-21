@@ -76,6 +76,12 @@ describe("nextCommands", () => {
       "supplywarden verify request --apply",
     ]);
     expect(nextCommands(entry("qs", ["OVERDUE"]))).toEqual(["supplywarden why qs"]);
+    expect(
+      nextCommands({
+        ...entry("picomatch", ["NEW"]),
+        decision: { strategy: "wait", reason: "", scope: { type: "global" } },
+      }),
+    ).toEqual(["supplywarden fix --apply"]);
     expect(nextCommands({ ...entry("picomatch", ["REMOVABLE"]), verifyOutcome: "KEEP" })).toEqual([
       "supplywarden why picomatch",
     ]);

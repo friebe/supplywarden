@@ -31,6 +31,32 @@ describe("classifyEntry", () => {
     expect(result.roots?.length).toBeGreaterThan(0);
   });
 
+  it("does not treat a recorded wait as DRIFT", () => {
+    const result = classifyEntry(fixtureDir("npm-simple"), {
+      id: "qs-wait",
+      status: "active",
+      package: "qs",
+      forcedVersion: "6.11.2",
+      scope: { type: "global" },
+      advisories: [
+        { ghsaId: "GHSA-qs-high", severity: "high", vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" },
+      ],
+      reason: "dev tree — wait",
+      strategy: "wait",
+      rootPackages: ["express"],
+      dependencyChains: [],
+      packageManager: "npm",
+      manifestPath: "package.json",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      createdBy: "jan",
+      reviewBy: "2026-12-01T00:00:00.000Z",
+      reviewReason: "wait",
+    });
+    expect(result.statuses).not.toContain("DRIFT");
+    expect(result.status).toBe("OK");
+    expect(result.suggestedAction).toMatch(/Waiting/);
+  });
+
   it("marks leftover override when package.json already depends on the min patched version", () => {
     const result = classifyEntry(fixtureDir("npm-mixed"), {
       id: "lodash-removable",
