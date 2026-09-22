@@ -310,6 +310,121 @@ describe("runCheck", () => {
     });
     expect(result.exitCode).toBe(1);
   });
+
+  const provenExpress = createOfflineRegistry(
+    { express: ["4.18.2", "4.18.3", "4.21.2"], qs: ["6.5.0", "6.11.2"] },
+    {
+      express: {
+        "4.18.3": { qs: "6.5.0" },
+        "4.21.2": { qs: "^6.11.2" },
+      },
+    },
+  );
+  const unprovenExpress = createOfflineRegistry(
+    { express: ["4.18.2", "4.18.3"], qs: ["6.5.0", "6.11.2"] },
+    { express: { "4.18.3": { qs: "6.5.0" } } },
+  );
+
+  async function writeQsWait(dir: string) {
+    await writeFile(
+      join(dir, "security-metadata.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          entries: [
+            {
+              id: "qs-wait",
+              status: "active",
+              package: "qs",
+              forcedVersion: "6.11.2",
+              scope: { type: "global" },
+              advisories: [
+                {
+                  ghsaId: "GHSA-qs",
+                  severity: "high",
+                  vulnerableRange: "< 6.11.2",
+                  patchedVersion: "6.11.2",
+                },
+              ],
+              reason: "development tree — wait",
+              strategy: "wait",
+              rootPackages: ["express"],
+              dependencyChains: ["express → qs"],
+              packageManager: "npm",
+              manifestPath: "package.json",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              createdBy: "jan",
+              reviewBy: "2020-01-01T00:00:00.000Z",
+              reviewReason: "wait",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  it("promotes a saved WAIT row when a root version now closes the advisory", async () => {
+    await withFixture("npm-simple", async (dir) => {
+      await writeQsWait(dir);
+      const result = await runCheck({
+        cwd: dir,
+        enableAudit: false,
+        registry: provenExpress,
+      });
+      const qs = result.report.entries.find((e) => e.entry.package === "qs");
+      expect(qs?.entry.strategy).toBe("upgrade");
+      expect(qs?.decision?.upgradeTargets?.[0]).toMatchObject({
+        name: "express",
+        from: "4.18.2",
+        to: "4.21.2",
+      });
+      expect(qs?.upgradeCommands).toEqual(["npm install express@4.21.2"]);
+      expect(result.messages.join("\n")).toMatch(/WAIT qs: now UPGRADE/);
+      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
+      expect(meta.entries[0].strategy).toBe("upgrade");
+    });
+  });
+
+  it("promotes a saved WAIT row to override on a production tree with no proven upgrade", async () => {
+    await withFixture("npm-simple", async (dir) => {
+      await writeQsWait(dir);
+      const result = await runCheck({
+        cwd: dir,
+        enableAudit: false,
+        registry: unprovenExpress,
+      });
+      const qs = result.report.entries.find((e) => e.entry.package === "qs");
+      expect(qs?.entry.strategy).toBe("override");
+      expect(result.messages.join("\n")).toMatch(/WAIT qs: now OVERRIDE qs@6\.11\.2/);
+    });
+  });
+
+  it("keeps WAIT and moves reviewBy when a development tree still has no proven upgrade", async () => {
+    await withFixture("npm-simple", async (dir) => {
+      const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+      pkg.devDependencies = pkg.dependencies;
+      delete pkg.dependencies;
+      await writeFile(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
+      const lock = JSON.parse(await readFile(join(dir, "package-lock.json"), "utf8"));
+      lock.packages[""].devDependencies = lock.packages[""].dependencies;
+      delete lock.packages[""].dependencies;
+      await writeFile(join(dir, "package-lock.json"), JSON.stringify(lock, null, 2));
+      await writeQsWait(dir);
+      const before = "2020-01-01T00:00:00.000Z";
+      const result = await runCheck({
+        cwd: dir,
+        enableAudit: false,
+        registry: unprovenExpress,
+      });
+      const qs = result.report.entries.find((e) => e.entry.package === "qs");
+      expect(qs?.entry.strategy).toBe("wait");
+      expect(qs?.statuses).not.toContain("OVERDUE");
+      expect(new Date(qs!.entry.reviewBy).getTime()).toBeGreaterThan(new Date(before).getTime());
+      expect(result.messages.join("\n")).toMatch(/WAIT qs: still no proven root upgrade/);
+    });
+  });
 });
 
 describe("runWhy / analyze", () => {

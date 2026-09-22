@@ -78,6 +78,18 @@ describe("nextCommands", () => {
     expect(nextCommands(entry("qs", ["OVERDUE"]))).toEqual(["supplywarden why qs"]);
     expect(
       nextCommands({
+        ...entry("qs", ["OK"]),
+        decision: {
+          strategy: "upgrade",
+          reason: "",
+          scope: { type: "global" },
+          upgradeTargets: [{ name: "express", from: "4.18.2", to: "4.21.2" }],
+        },
+        upgradeCommands: ["npm install express@4.21.2"],
+      }),
+    ).toEqual(["npm install express@4.21.2"]);
+    expect(
+      nextCommands({
         ...entry("picomatch", ["NEW"]),
         decision: { strategy: "wait", reason: "", scope: { type: "global" } },
       }),

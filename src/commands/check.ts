@@ -3,13 +3,14 @@ import {
   classifyEntry,
   classifyUntrackedOverride,
   isDropCandidate,
+  pickPrimary,
   reconcileWithAudit,
   sortCheckEntries,
 } from "../check/classify.js";
 import { decide, formatUpgradeTarget, formatUpgradeTargets, lookupFromRegistry, resolveUpgradeDecision } from "../decision/engine.js";
 import { specFloorSafe } from "../util/semver-spec.js";
-import { readMetadata } from "../metadata/store.js";
-import { nowIso } from "../util/time.js";
+import { readMetadata, writeMetadata } from "../metadata/store.js";
+import { addDaysIso, nowIso } from "../util/time.js";
 import {
   createLiveAudit,
   filterFindings,
@@ -86,6 +87,12 @@ export async function runCheck(opts: {
     );
   }
 
+  const registryForWait = opts.registry ?? createLiveRegistry(cwd);
+  const waitNotes = await refreshWaitEntries(cwd, config, classified, registryForWait);
+  if (waitNotes.wrote) {
+    writeMetadata(cwd, config, metadata);
+  }
+
   const sorted = sortCheckEntries(classified);
 
   const counts: Record<string, number> = {};
@@ -110,6 +117,7 @@ export async function runCheck(opts: {
   for (const entry of sorted.filter((c) => c.status === "NEW" || c.statuses.includes("NEW"))) {
     messages.push(formatNewFindingMessage(entry));
   }
+  for (const note of waitNotes.messages) messages.push(note);
   if (!sorted.length) {
     messages.push(
       "Nothing to show: no security-metadata.json entries and no package.json overrides. Run init or analyze/fix.",
@@ -152,6 +160,7 @@ export async function runCheck(opts: {
   return {
     exitCode,
     messages,
+    writtenFiles: waitNotes.wrote ? [config.metadataPath] : undefined,
     report: {
       title: `supplywarden check – ${active.length} active overrides`,
       generatedAt: nowIso(),
@@ -211,6 +220,93 @@ export function listUntrackedOverrides(
   return imported
     .filter((e) => !tracked.has(`${e.package}::${e.forcedVersion}`))
     .map((entry) => classifyUntrackedOverride(cwd, entry));
+}
+
+/** Saved WAIT rows are re-decided every check: proven upgrade, override, or another wait cycle. */
+async function refreshWaitEntries(
+  cwd: string,
+  config: SupplywardenConfig,
+  classified: CheckEntry[],
+  registry: RegistryClient,
+): Promise<{ wrote: boolean; messages: string[] }> {
+  const messages: string[] = [];
+  let wrote = false;
+  for (const item of classified) {
+    if (item.entry.strategy !== "wait") continue;
+    if (item.entry.status !== "active") continue;
+    if (item.statuses.includes("REMOVABLE") || item.statuses.includes("RESOLVED")) continue;
+
+    const graph = analyzeNpmGraph(cwd, item.entry.package);
+    const kind = mergeDependencyKind(undefined, graph.dependencyKind);
+    const decision = await resolveUpgradeDecision(
+      decide({
+        graph: { ...graph, dependencyKind: kind },
+        advisories: item.entry.advisories,
+        config,
+      }),
+      lookupFromRegistry(registry),
+      {
+        vulnPackage: item.entry.package,
+        advisories: item.entry.advisories,
+        chains: graph.chains,
+        dependencyKind: kind,
+      },
+    );
+    const outcome = waitRecheckOutcome(decision);
+    if (outcome === "unknown") {
+      messages.push(
+        `WAIT ${item.entry.package}: registry recheck inconclusive — still waiting`,
+      );
+      continue;
+    }
+
+    wrote = true;
+    if (outcome === "wait") {
+      item.entry.reviewBy = addDaysIso(config.defaultReviewDays);
+      item.entry.reviewReason = "Wait — rechecked, no proven root upgrade yet";
+      const statuses = item.statuses.filter((s) => s !== "OVERDUE");
+      if (!statuses.length) statuses.push("OK");
+      item.statuses = statuses;
+      item.status = pickPrimary(statuses);
+      item.suggestedAction = `Still waiting — no proven root upgrade. Next review is reviewBy.`;
+      messages.push(`WAIT ${item.entry.package}: still no proven root upgrade`);
+      continue;
+    }
+
+    item.entry.strategy = decision.strategy;
+    item.entry.reason = decision.reason;
+    item.entry.reviewReason =
+      decision.strategy === "upgrade"
+        ? "Root upgrade now closes the advisory"
+        : "Override now required";
+    item.decision = decision;
+    const pm = resolvePackageManager(cwd);
+    const displays =
+      decision.strategy === "upgrade"
+        ? rootUpgradeCommands(pm, decision.upgradeTargets ?? []).map((c) => c.display)
+        : [];
+    item.upgradeCommand = displays[0];
+    item.upgradeCommands = displays.length ? displays : undefined;
+    const bump = formatUpgradeTargets(decision);
+    item.suggestedAction =
+      decision.strategy === "upgrade"
+        ? `WAIT recheck: UPGRADE ${bump} — run ${displays.map((c) => `\`${c}\``).join(" then ")}`
+        : `WAIT recheck: OVERRIDE ${item.entry.package}@${decision.forcedVersion ?? item.entry.forcedVersion} — run \`supplywarden fix --apply\``;
+    messages.push(
+      decision.strategy === "upgrade"
+        ? `WAIT ${item.entry.package}: now UPGRADE ${bump}${displays.length ? ` — ${displays.join(" then ")}` : ""}`
+        : `WAIT ${item.entry.package}: now OVERRIDE ${item.entry.package}@${decision.forcedVersion ?? item.entry.forcedVersion}`,
+    );
+  }
+  return { wrote, messages };
+}
+
+function waitRecheckOutcome(decision: Decision): "upgrade" | "override" | "wait" | "unknown" {
+  if (decision.strategy === "wait") return "wait";
+  if (decision.strategy === "override") return "override";
+  const targets = decision.upgradeTargets ?? [];
+  if (targets.length > 0 && targets.every((t) => Boolean(t.to))) return "upgrade";
+  return "unknown";
 }
 
 function formatNewFindingMessage(entry: CheckEntry): string {
