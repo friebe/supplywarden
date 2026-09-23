@@ -82,7 +82,7 @@ export function classifyEntry(
   }
 
   const inPackageJson = overridePresent(cwd, entry);
-  if (entry.status === "active" && !inPackageJson && entry.strategy !== "wait") {
+  if (entry.status === "active" && !inPackageJson && entry.strategy === "override") {
     statuses.push("DRIFT");
     issues.push({
       code: "OK",
@@ -119,6 +119,10 @@ export function classifyEntry(
 
   // onlyForcedInTree with many roots = the override is holding the tree, not leftover.
   // Few roots = prefer upgrading those packages; still not verify --apply.
+
+  if (entry.strategy === "defer" && entry.status === "active") {
+    statuses.push("DEFERRED");
+  }
 
   if (entry.status === "active" && isPast(entry.reviewBy, now)) {
     statuses.push("OVERDUE");
@@ -205,6 +209,7 @@ export function pickPrimary(statuses: CheckStatus[]): CheckStatus {
     "RESOLVED",
     "REMOVABLE",
     "OVERDUE",
+    "DEFERRED",
     "STALE",
     "PENDING_VERIFY",
     "OK",
@@ -257,6 +262,9 @@ function suggest(
       }
       return `No longer in the lockfile / no longer vulnerable — run \`supplywarden verify ${pkg} --apply\``;
     case "OVERDUE":
+      if (entry.strategy === "defer") {
+        return `${entry.reason} Review is due — this is not a new finding.`;
+      }
       if (hold?.weak) return holdingOverrideAction(pkg, roots, hold);
       if (entry.strategy === "wait") {
         return `Wait expired — decide upgrade or override. Run \`supplywarden why ${pkg}\` then \`supplywarden fix --apply\``;
@@ -268,6 +276,8 @@ function suggest(
       return `Last verify/apply did not stick — retry with \`supplywarden verify ${pkg}\``;
     case "PENDING_VERIFY":
       return `Override is in package.json but the lockfile is still old — run npm install, then \`supplywarden check\``;
+    case "DEFERRED":
+      return entry.reason || `Seen, not applied. Revisit at reviewBy — not a new finding.`;
     case "NEW":
       return `Untracked audit finding — run \`supplywarden why ${pkg}\` then \`supplywarden fix --apply\``;
     case "UNTRACKED":
@@ -392,6 +402,7 @@ export function sortCheckEntries(entries: CheckEntry[]): CheckEntry[] {
     if (e.statuses.includes("REMOVABLE") || e.statuses.includes("RESOLVED")) return 4;
     if (e.status === "UNTRACKED" || e.statuses.includes("UNTRACKED")) return 5;
     if (e.status === "PENDING_VERIFY" || e.statuses.includes("PENDING_VERIFY")) return 6;
+    if (e.status === "DEFERRED" || e.statuses.includes("DEFERRED")) return 8;
     return 7;
   };
   return [...entries].sort((a, b) => {

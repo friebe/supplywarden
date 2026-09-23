@@ -90,6 +90,7 @@ export function isFindingCovered(finding: AuditFinding, entries: MetadataEntry[]
       (e.status === "active" || e.status === "pending_verify"),
   );
   if (!active.length) return false;
+  if (active.some((entry) => entry.strategy === "defer" || entry.strategy === "wait")) return true;
   const advisory = advisoryForFinding(finding);
   return active.some((entry) => specFloorSafe(entry.forcedVersion, [advisory]));
 }

@@ -137,6 +137,7 @@
       <button type="button" class="chip" data-chip="cleanup">Cleanup</button>
       <button type="button" class="chip" data-chip="waiting">Waiting</button>
       <button type="button" class="chip" data-chip="tracked">Tracked</button>
+      <button type="button" class="chip" data-chip="later">Seen</button>
       <input id="filter" type="search" placeholder="Filter…"/>
     </div>
     <div id="sections"></div>
@@ -183,11 +184,16 @@
       }
       if (e.auditClear) return ['supplywarden verify ' + pkg];
       if (e.weakOverride) return ['supplywarden fix --apply'];
+      if (e.entry && e.entry.strategy === 'defer') return [];
       if (st.includes('OVERDUE') || st.includes('STALE')) return ['supplywarden why ' + pkg];
       return pkg ? ['supplywarden verify ' + pkg] : [];
     }
     function actionCell(e) {
-      return nextCommands(e).map((c) =>
+      const cmds = nextCommands(e);
+      if (!cmds.length && e.entry && e.entry.strategy === 'defer' && e.suggestedAction) {
+        return '<div class="quiet">' + esc(e.suggestedAction) + '</div>';
+      }
+      return cmds.map((c) =>
         '<code>' + esc(c) + '</code><button type="button" class="copy" data-copy="' + esc(c) + '">copy</button>'
       ).join('<br/>');
     }
@@ -201,6 +207,7 @@
     function bucket(e) {
       const st = statusesOf(e);
       if (st.includes('NEW') || st.includes('OVERDUE') || st.includes('VERIFY_FAILED') || st.includes('DRIFT') || st.includes('UNTRACKED')) return 'decide';
+      if (st.includes('DEFERRED')) return 'later';
       if (st.includes('PENDING_VERIFY')) return 'waiting';
       if (canRemove(e)) return 'cleanup';
       return 'tracked';
@@ -292,7 +299,8 @@
         REMOVABLE: 'Removable',
         RESOLVED: 'Resolved',
         OK: 'Ok',
-        STALE: 'Stale'
+        STALE: 'Stale',
+        DEFERRED: 'Seen'
       };
       const st = statusesOf(e);
       const primary = names[e.status] || names[st[0]] || e.status;
@@ -326,12 +334,14 @@
     const waiting = sorted.filter((e) => bucket(e) === 'waiting');
     const cleanup = sorted.filter((e) => bucket(e) === 'cleanup');
     const tracked = sorted.filter((e) => bucket(e) === 'tracked');
+    const later = sorted.filter((e) => bucket(e) === 'later');
     const devOnly = sorted.filter((e) => e.dependencyKind === 'development');
     const tally = [
       { chip: 'decide', n: decide.length, label: 'to decide' },
       { chip: 'cleanup', n: cleanup.length, label: 'safe to remove' },
       { chip: 'waiting', n: waiting.length, label: 'waiting' },
       { chip: 'tracked', n: tracked.length, label: 'tracked' },
+      { chip: 'later', n: later.length, label: 'seen' },
       { chip: 'development', n: devOnly.length, label: 'development' }
     ].filter((c) => c.n > 0);
     const cards = document.getElementById('cards');
@@ -345,6 +355,7 @@
       if (chip === 'cleanup' && bucket(e) !== 'cleanup') return false;
       if (chip === 'waiting' && bucket(e) !== 'waiting') return false;
       if (chip === 'tracked' && bucket(e) !== 'tracked') return false;
+      if (chip === 'later' && bucket(e) !== 'later') return false;
       if (chip === 'development' && e.dependencyKind !== 'development') return false;
       if (query && !haystack(e).includes(query)) return false;
       return true;
@@ -358,6 +369,7 @@
         { title: 'Decide this week', items: decide },
         { title: 'Waiting on install', items: waiting },
         { title: 'Safe to remove', items: cleanup },
+        { title: 'Seen, not applied', items: later },
         { title: 'Tracked', items: tracked }
       ];
       let html = '';

@@ -139,6 +139,46 @@ function formatSkipped(skipped?: string[]): string {
   return ` (not ${shown.join(", ")}${more} — still vulnerable)`;
 }
 
+/** `from → to` when the two versions are different majors, otherwise undefined. */
+export function majorJumpLabel(from?: string, to?: string): string | undefined {
+  if (!from || !to || !valid(from) || !valid(to)) return undefined;
+  if (major(from) === major(to)) return undefined;
+  return `${from} → ${to}`;
+}
+
+/** Proven root upgrades that cross a major, e.g. `express@4.18.2 → 5.0.0`. */
+export function breakingUpgradeSummary(decision?: Decision): string {
+  if (!decision?.upgradeTargets?.length) return "";
+  return decision.upgradeTargets
+    .map((t) => {
+      const jump = t.to ? majorJumpLabel(t.from, t.to) : undefined;
+      return jump ? `${t.name}@${jump}` : undefined;
+    })
+    .filter((label): label is string => Boolean(label))
+    .join(", ");
+}
+
+export function breakingUpgradeNote(decision?: Decision): string | undefined {
+  const summary = breakingUpgradeSummary(decision);
+  if (!summary) return undefined;
+  return `No override written. The advisory only closes with a breaking major upgrade: ${summary}. package.json was left unchanged.`;
+}
+
+/** Installed copies that would be forced onto a new major. */
+export function breakingPinSummary(pkg: string, installed: string[], forced?: string): string {
+  if (!forced) return "";
+  return installed
+    .filter((version) => majorJumpLabel(version, forced))
+    .map((version) => `${pkg}@${version} → ${forced}`)
+    .join(", ");
+}
+
+export function breakingPinNote(pkg: string, installed: string[], forced?: string): string | undefined {
+  const summary = breakingPinSummary(pkg, installed, forced);
+  if (!summary) return undefined;
+  return `Breaking major pin: ${summary}. Dependents still on the old major can break.`;
+}
+
 /** Lowest proven root version(s) that close the advisory, e.g. `nx@23.2.1 → 23.2.5`. */
 export function formatUpgradeTargets(decision?: Decision): string {
   if (decision?.strategy !== "upgrade") return "";

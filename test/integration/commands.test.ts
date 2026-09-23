@@ -87,8 +87,9 @@ describe("runCheck", () => {
   });
 
   it("kitchen-sink audit labels NEW nx-only upgrade, mixed nx+lodash, and override over threshold", async () => {
+    await withFixture("npm-mixed", async (dir) => {
     const result = await runCheck({
-      cwd: fixtureDir("npm-mixed"),
+      cwd: dir,
       enableAudit: true,
       audit: createStaticAudit([
         {
@@ -156,10 +157,11 @@ describe("runCheck", () => {
     expect(byPkg["serialize-javascript"]?.status).toBe("NEW");
     expect(byPkg["serialize-javascript"]?.decision?.strategy).toBe("override");
     expect(byPkg["serialize-javascript"]?.roots?.sort()).toEqual(["ava", "jest", "mocha", "webpack"].sort());
+    });
   });
 
   it("loads NEW findings from a Dependabot alert file instead of live audit", async () => {
-    const cwd = fixtureDir("npm-mixed");
+    await withFixture("npm-mixed", async (cwd) => {
     const result = await runCheck({
       cwd,
       enableAudit: false,
@@ -173,6 +175,7 @@ describe("runCheck", () => {
     ]);
     expect(toMarkdown(result.report)).toMatch(/nx@23\.2\.0 → 23\.2\.5 \(not 23\.2\.1/);
     expect(result.messages.join("\n")).toMatch(/alerts: .*untracked finding/);
+    });
   });
 
   it("explains empty fixtures without overrides or metadata", async () => {
@@ -201,8 +204,9 @@ describe("runCheck", () => {
   });
 
   it("reports NEW audit findings that are not already overridden", async () => {
+    await withFixture("npm-simple", async (dir) => {
     const result = await runCheck({
-      cwd: fixtureDir("npm-simple"),
+      cwd: dir,
       enableAudit: true,
       audit: createStaticAudit([
         {
@@ -222,11 +226,13 @@ describe("runCheck", () => {
     expect(qs?.suggestedAction).toMatch(/UPGRADE|OVERRIDE/);
     expect(qs?.suggestedAction).toMatch(/express|qs@/);
     expect(qs?.decision?.strategy).toMatch(/upgrade|override/);
+    });
   });
 
   it("suggests a newer root version, not the one already installed", async () => {
+    await withFixture("npm-simple", async (dir) => {
     const result = await runCheck({
-      cwd: fixtureDir("npm-simple"),
+      cwd: dir,
       enableAudit: true,
       audit: createStaticAudit([
         {
@@ -270,6 +276,7 @@ describe("runCheck", () => {
     expect(html).toContain("express@4.18.2");
     expect(html).toContain("4.21.2");
     expect(toMarkdown(result.report)).toMatch(/express@4\.18\.2 → 4\.21\.2/);
+    });
   });
 
   it("does not flag audit findings covered by an active override", async () => {
@@ -300,8 +307,9 @@ describe("runCheck", () => {
   });
 
   it("strict fails on new audit findings", async () => {
+    await withFixture("npm-simple", async (dir) => {
     const result = await runCheck({
-      cwd: fixtureDir("npm-simple"),
+      cwd: dir,
       strict: true,
       enableAudit: true,
       audit: createStaticAudit([
@@ -309,6 +317,7 @@ describe("runCheck", () => {
       ]),
     });
     expect(result.exitCode).toBe(1);
+    });
   });
 
   const provenExpress = createOfflineRegistry(
@@ -324,6 +333,68 @@ describe("runCheck", () => {
     { express: ["4.18.2", "4.18.3"], qs: ["6.5.0", "6.11.2"] },
     { express: { "4.18.3": { qs: "6.5.0" } } },
   );
+
+  it("records a first-sight finding so the next check is deferred, not NEW", async () => {
+    await withFixture("npm-simple", async (dir) => {
+      const audit = createStaticAudit([
+        {
+          package: "qs",
+          severity: "high",
+          range: "< 6.11.0",
+          ghsaId: "GHSA-qs-high",
+          patchedVersion: "6.11.2",
+        },
+      ]);
+      const first = await runCheck({
+        cwd: dir,
+        enableAudit: true,
+        audit,
+        registry: unprovenExpress,
+      });
+      expect(first.report.entries.some((e) => e.status === "NEW" && e.entry.package === "qs")).toBe(
+        true,
+      );
+      expect(first.messages.join("\n")).toMatch(/Recorded 1 finding/);
+      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8")) as {
+        entries: { package: string; strategy: string; reason: string; reviewBy: string }[];
+      };
+      const row = meta.entries.find((e) => e.package === "qs");
+      expect(row?.strategy).toBe("defer");
+      expect(row?.reason).toMatch(/Seen, not applied/);
+      expect(row?.reviewBy).toBeTruthy();
+
+      const second = await runCheck({
+        cwd: dir,
+        strict: true,
+        enableAudit: true,
+        audit,
+        registry: unprovenExpress,
+      });
+      const qs = second.report.entries.find((e) => e.entry.package === "qs");
+      expect(qs?.statuses).toContain("DEFERRED");
+      expect(qs?.statuses).not.toContain("NEW");
+      expect(qs?.suggestedAction).toMatch(/Seen, not applied/);
+      expect(second.exitCode).toBe(0);
+      expect(toMarkdown(second.report)).toMatch(/## Seen, not applied/);
+      expect(renderHtml(second.report)).toContain("Seen, not applied");
+      const again = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8")) as {
+        entries: { package: string; reviewBy: string; strategy: string }[];
+      };
+      expect(again.entries.find((e) => e.package === "qs")?.reviewBy).toBe(row?.reviewBy);
+
+      const promoted = await runCheck({
+        cwd: dir,
+        enableAudit: true,
+        audit,
+        registry: provenExpress,
+      });
+      const upgraded = promoted.report.entries.find((e) => e.entry.package === "qs");
+      expect(upgraded?.statuses).not.toContain("NEW");
+      expect(upgraded?.statuses).not.toContain("DEFERRED");
+      expect(upgraded?.entry.strategy).toBe("upgrade");
+      expect(promoted.messages.join("\n")).toMatch(/DEFERRED qs: now UPGRADE/);
+    });
+  });
 
   async function writeQsWait(dir: string) {
     await writeFile(
@@ -626,6 +697,39 @@ describe("doctor / html / sync", () => {
     expect(JSON.stringify(result.report.entries[0])).toMatch(/roots|express/);
   });
 
+  it("renders the compact HTML template selected in config", async () => {
+    await withFixture("npm-removable", async (dir) => {
+      await writeFile(
+        join(dir, ".supplywardenrc.json"),
+        JSON.stringify({ htmlTemplate: "compact" }),
+      );
+      const result = await runCheck({ cwd: dir, enableAudit: false });
+      const html = renderHtml(result.report);
+      expect(html).toContain("supplywarden · compact");
+      expect(html).toContain("Safe to remove");
+      expect(html).toContain("supplywarden verify qs --apply");
+      expect(html).not.toContain("<!--SUPPLYWARDEN_DATA-->");
+    });
+  });
+
+  it("renders a custom HTML template relative to the project", async () => {
+    await withFixture("npm-simple", async (dir) => {
+      await writeFile(
+        join(dir, "my-report.html"),
+        "<!doctype html><title>Mine</title><script id=\"data\"><!--SUPPLYWARDEN_DATA--></script>",
+      );
+      await writeFile(
+        join(dir, ".supplywardenrc.json"),
+        JSON.stringify({ htmlTemplate: "my-report.html" }),
+      );
+      const result = await runCheck({ cwd: dir, enableAudit: false });
+      const html = renderHtml(result.report);
+      expect(html).toContain("<title>Mine</title>");
+      expect(html).toContain('"entries":[]');
+      expect(html).not.toContain("<!--SUPPLYWARDEN_DATA-->");
+    });
+  });
+
   it("HTML actions use verify <pkg>, not check --apply", async () => {
     const result = await runCheck({ cwd: fixtureDir("npm-mixed"), enableAudit: false });
     const html = renderHtml(result.report);
@@ -642,11 +746,9 @@ describe("doctor / html / sync", () => {
     expect(actions.some((a: string) => a.includes("supplywarden verify tar"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden why qs"))).toBe(true);
     expect(html).toMatch(/Decide this week/);
-    expect(html).toMatch(/title: 'Tracked'/);
-    expect(html).toMatch(/data-chip="tracked"/);
-    expect(html).toMatch(/<th>Severity<\/th>/);
-    expect(html).toMatch(/<th>Scope<\/th>/);
-    expect(html).toMatch(/function scopeBadge/);
+    expect(html).toMatch(/tracked: 'Tracked'/);
+    expect(html).toMatch(/data-queue/);
+    expect(html).toMatch(/function severity/);
     const picomatch = data.entries.find((e: { entry: { package: string } }) => e.entry.package === "picomatch");
     expect(picomatch?.dependencyKind).toBe("development");
     const md = toMarkdown(result.report);
@@ -657,7 +759,7 @@ describe("doctor / html / sync", () => {
     expect(md).toMatch(/follow-redirects@1\.15\.6 \| OK · verified /);
     expect(actions.some((a: string) => a.includes("supplywarden sync"))).toBe(true);
     expect(actions.some((a: string) => a.includes("supplywarden init"))).toBe(true);
-    expect(html).toMatch(/function advisoryLinks/);
+    expect(html).toMatch(/function links/);
     expect(html).toMatch(/https:\/\/github.com\/advisories\//);
     expect(JSON.stringify(picomatch)).toMatch(/GHSA-c2c7-rcm5-vvqj/);
   });

@@ -319,4 +319,73 @@ describe("applyFix root upgrade", () => {
     };
     expect(meta.entries[0]).toMatchObject({ strategy: "wait", status: "active" });
   });
+
+  it("explains why a breaking major root upgrade writes no override", async () => {
+    const cwd = await nxProject();
+    const breaking = {
+      ...decision,
+      upgradeTargets: [{ name: "nx", from: "23.3.0", to: "24.0.0" }],
+    };
+    const result = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group,
+      graph,
+      decision: breaking,
+      apply: true,
+      skipInstall: false,
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(/No override written/);
+    expect(result.messages.join("\n")).toMatch(/breaking major upgrade: nx@23\.3\.0 → 24\.0\.0/);
+    expect(result.messages.join("\n")).toMatch(/package\.json was left unchanged/);
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as { overrides?: unknown };
+    expect(pkg.overrides).toBeUndefined();
+  });
+
+  it("warns when an override forces the package onto a new major", async () => {
+    const cwd = await nxProject();
+    const pinDecision = {
+      strategy: "override" as const,
+      reason: "no proven root upgrade",
+      forcedVersion: "2.0.0",
+      scope: { type: "global" as const },
+    };
+    const pinGroup: PackageAlertGroup = {
+      ...group,
+      package: "left-pad",
+      forcedVersion: "2.0.0",
+      advisories: [{ severity: "high", vulnerableRange: "< 2.0.0", patchedVersion: "2.0.0" }],
+    };
+    const pinGraph: GraphAnalysis = {
+      ...graph,
+      package: "left-pad",
+      versions: ["1.3.0"],
+    };
+    const result = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group: pinGroup,
+      graph: pinGraph,
+      decision: pinDecision,
+      apply: true,
+      skipInstall: true,
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(/Breaking major pin: left-pad@1\.3\.0 → 2\.0\.0/);
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
+      overrides?: { "left-pad"?: string };
+    };
+    expect(pkg.overrides?.["left-pad"]).toBe("2.0.0");
+  });
 });

@@ -1,6 +1,6 @@
 export type Severity = "critical" | "high" | "medium" | "low" | "unknown";
 
-export type Strategy = "override" | "upgrade" | "wait";
+export type Strategy = "override" | "upgrade" | "wait" | "defer";
 
 export type EntryStatus =
   | "active"
@@ -28,7 +28,8 @@ export type CheckStatus =
   | "DRIFT"
   | "STALE"
   | "PENDING_VERIFY"
-  | "VERIFY_FAILED";
+  | "VERIFY_FAILED"
+  | "DEFERRED";
 
 export type ValidationCode =
   | "VERSION_NOT_FOUND"
@@ -41,7 +42,6 @@ export type ValidationCode =
   | "PEER_CONFLICT"
   | "CONFLICTING_OVERRIDES"
   | "VERIFY_FAILED"
-  | "IMPACT_BLOCKED"
   | "OK";
 
 export type PackageManager = "npm" | "pnpm" | "yarn";
@@ -100,8 +100,8 @@ export type SupplywardenConfig = {
   autoApplyRootUpgrade: boolean;
   defaultReviewDays: number;
   metadataPath: string;
-  impactWarnThreshold: number;
-  impactBlockThreshold: number;
+  /** Built-in `default` / `compact`, or an HTML file relative to the project root. */
+  htmlTemplate: string;
   audit: AuditConfig;
   /** CLI/HTML date display. Metadata stays ISO. */
   dateLocale: DateLocale;
@@ -169,12 +169,6 @@ export type ValidationIssue = {
   blocking: boolean;
 };
 
-export type ImpactDiff = {
-  changedPackages: number;
-  warning: boolean;
-  blocked: boolean;
-};
-
 export type CheckEntry = {
   entry: MetadataEntry;
   status: CheckStatus;
@@ -213,7 +207,6 @@ export type ReportModel = {
   groups?: PackageAlertGroup[];
   decision?: Decision;
   validation?: ValidationIssue[];
-  impact?: ImpactDiff;
   markdown?: string;
   dateLocale?: DateLocale;
   timeZone?: string;

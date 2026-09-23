@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ReportModel } from "../types.js";
 import { withReportCommands } from "./commands.js";
@@ -7,22 +7,55 @@ import { loadConfig } from "../config.js";
 import { formatDisplayDate } from "../util/time.js";
 import { formatVerifiedKeep } from "./verified.js";
 
-function loadTemplate(): string {
+const DATA_MARKER = "<!--SUPPLYWARDEN_DATA-->";
+
+function builtInTemplate(name: "default" | "compact"): string | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
+  const filename = name === "compact" ? "report-compact.html" : "report.html";
   const candidates = [
-    join(here, "../../templates/report.html"),
-    join(here, "../templates/report.html"),
-    join(here, "templates/report.html"),
+    join(here, "../../templates", filename),
+    join(here, "../templates", filename),
+    join(here, "templates", filename),
   ];
   for (const path of candidates) {
     if (existsSync(path)) return readFileSync(path, "utf8");
   }
-  return FALLBACK_HTML;
+  return undefined;
+}
+
+function loadTemplate(cwd: string, configured: string): string {
+  const builtIn =
+    configured === "default" || configured === "compact"
+      ? builtInTemplate(configured)
+      : undefined;
+  const customPath =
+    configured !== "default" && configured !== "compact"
+      ? isAbsolute(configured)
+        ? configured
+        : resolve(cwd, configured)
+      : undefined;
+  const template = builtIn ?? (customPath && existsSync(customPath)
+    ? readFileSync(customPath, "utf8")
+    : undefined);
+
+  if (!template) {
+    if (configured === "default") return FALLBACK_HTML;
+    throw new Error(
+      customPath
+        ? `HTML template not found: ${customPath}`
+        : `Built-in HTML template not found: ${configured}`,
+    );
+  }
+  if (!template.includes(DATA_MARKER)) {
+    throw new Error(`HTML template must contain ${DATA_MARKER}`);
+  }
+  return template;
 }
 
 export function renderHtml(report: ReportModel): string {
-  const template = loadTemplate();
-  const config = loadConfig(report.cwd || ".");
+  const cwd = report.cwd || ".";
+  const config = loadConfig(cwd);
+  const template = loadTemplate(cwd, config.htmlTemplate);
   const dateOpts = {
     dateLocale: report.dateLocale ?? config.dateLocale,
     timeZone: report.timeZone ?? config.timeZone,
@@ -48,7 +81,7 @@ export function renderHtml(report: ReportModel): string {
     }),
   };
   const json = JSON.stringify(normalized).replace(/</g, "\\u003c");
-  return template.replace("<!--SUPPLYWARDEN_DATA-->", json);
+  return template.replace(DATA_MARKER, json);
 }
 
 export function writeHtml(report: ReportModel, path: string): string {

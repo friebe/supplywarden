@@ -57,6 +57,34 @@ describe("classifyEntry", () => {
     expect(result.suggestedAction).toMatch(/Waiting/);
   });
 
+  it("lists a seen finding as DEFERRED, not DRIFT or NEW", () => {
+    const result = classifyEntry(fixtureDir("npm-simple"), {
+      id: "qs-defer",
+      status: "active",
+      package: "qs",
+      forcedVersion: "6.11.2",
+      scope: { type: "global" },
+      advisories: [
+        { ghsaId: "GHSA-qs-high", severity: "high", vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" },
+      ],
+      reason: "Seen, not applied. Suggested override qs@6.11.2.",
+      strategy: "defer",
+      rootPackages: ["express"],
+      dependencyChains: [],
+      packageManager: "npm",
+      manifestPath: "package.json",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      createdBy: "jan",
+      reviewBy: "2026-12-01T00:00:00.000Z",
+      reviewReason: "Seen — not applied this cycle",
+    });
+    expect(result.statuses).toContain("DEFERRED");
+    expect(result.statuses).not.toContain("DRIFT");
+    expect(result.statuses).not.toContain("NEW");
+    expect(result.status).toBe("DEFERRED");
+    expect(result.suggestedAction).toMatch(/Seen, not applied/);
+  });
+
   it("marks leftover override when package.json already depends on the min patched version", () => {
     const result = classifyEntry(fixtureDir("npm-mixed"), {
       id: "lodash-removable",

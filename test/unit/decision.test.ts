@@ -4,7 +4,6 @@ import { recommend, stillVulnerable, upgradeTargetTo, formatUpgradeTarget, forma
 import { loadAlertFile } from "../../src/alerts/dependabot.js";
 import { join } from "node:path";
 import { FIXTURES_ROOT } from "../helpers/fixture-project.js";
-import { assessImpact } from "../../src/validation/impact-diff.js";
 import { DEFAULT_CONFIG } from "../../src/config.js";
 import { createOfflineRegistry } from "../../src/registry/verify.js";
 import type { Advisory, Decision, DependencyChain } from "../../src/types.js";
@@ -366,10 +365,3 @@ describe("stillVulnerable", () => {
   });
 });
 
-describe("impact diff", () => {
-  it("blocks above threshold", () => {
-    const impact = assessImpact(120, DEFAULT_CONFIG);
-    expect(impact.blocked).toBe(true);
-    expect(impact.warning).toBe(true);
-  });
-});

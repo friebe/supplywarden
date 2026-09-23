@@ -3,8 +3,7 @@
   "autoApplyRootUpgrade": false,
   "defaultReviewDays": 7,
   "metadataPath": "security-metadata.json",
-  "impactWarnThreshold": 20,
-  "impactBlockThreshold": 100,
+  "htmlTemplate": "compact",
   "dateLocale": "de",
   "timeZone": "Europe/Berlin",
   "audit": {

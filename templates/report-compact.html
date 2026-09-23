@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>supplywarden · compact</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f2;
+      --paper: #fff;
+      --ink: #17201b;
+      --muted: #68716b;
+      --line: #dfe3df;
+      --accent: #315f49;
+      --danger: #a43c32;
+      --warn: #8b6118;
+    }
+    * { box-sizing: border-box }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, sans-serif }
+    main { width: min(980px, calc(100% - 28px)); margin: 28px auto 64px }
+    header { display: flex; justify-content: space-between; gap: 24px; align-items: end; margin-bottom: 20px }
+    h1 { margin: 0; font-size: 20px; letter-spacing: -.02em }
+    h2 { margin: 26px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em }
+    .meta, .muted { color: var(--muted); font-size: 12px }
+    .summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px }
+    .summary button {
+      border: 1px solid var(--line); border-radius: 999px; background: var(--paper);
+      color: var(--muted); padding: 5px 10px; cursor: pointer
+    }
+    .summary button.on { border-color: var(--accent); color: var(--accent) }
+    .summary strong { color: var(--ink) }
+    .list { display: grid; gap: 7px }
+    article {
+      display: grid; grid-template-columns: 115px minmax(180px, 1fr) minmax(260px, 1.25fr);
+      gap: 14px; padding: 13px 15px; background: var(--paper); border: 1px solid var(--line);
+      border-radius: 8px
+    }
+    .status { font-weight: 650 }
+    .NEW, .VERIFY_FAILED, .OVERDUE { color: var(--danger) }
+    .DRIFT, .UNTRACKED { color: var(--warn) }
+    .REMOVABLE, .RESOLVED { color: var(--accent) }
+    .pkg { font-weight: 650; overflow-wrap: anywhere }
+    .advisory { color: var(--accent); text-decoration: none; font-size: 12px; margin-right: 7px }
+    .action { min-width: 0 }
+    code {
+      display: inline-block; max-width: 100%; overflow-wrap: anywhere; color: var(--ink);
+      background: #f1f3f0; border-radius: 4px; padding: 3px 6px; font: 12px/1.4 ui-monospace, monospace
+    }
+    .copy { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 3px 0 3px 6px }
+    details { margin-top: 5px; color: var(--muted); font-size: 12px }
+    summary { cursor: pointer }
+    .empty { color: var(--muted); padding: 18px 0 }
+    @media (max-width: 700px) {
+      header { display: block }
+      article { grid-template-columns: 1fr }
+    }
+    @media print {
+      body { background: #fff }
+      main { width: 100%; margin: 0 }
+      .summary, .copy { display: none }
+      article { break-inside: avoid }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1 id="title">supplywarden</h1><div class="meta" id="cwd"></div></div>
+      <div class="meta" id="generated"></div>
+    </header>
+    <nav class="summary" id="summary"></nav>
+    <div id="board"></div>
+  </main>
+  <script type="application/json" id="supplywarden-data"><!--SUPPLYWARDEN_DATA--></script>
+  <script>
+    const report = JSON.parse(document.getElementById('supplywarden-data').textContent || '{}');
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
+      {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+    ));
+    const statuses = (e) => e.statuses?.length ? e.statuses : [e.status];
+    const removable = (e) => statuses(e).includes('REMOVABLE') || statuses(e).includes('RESOLVED');
+    function queue(e) {
+      const s = statuses(e);
+      if (s.some((x) => ['NEW','OVERDUE','VERIFY_FAILED','DRIFT','UNTRACKED'].includes(x))) return 'decide';
+      if (s.includes('PENDING_VERIFY')) return 'waiting';
+      if (removable(e)) return 'cleanup';
+      if (s.includes('DEFERRED')) return 'seen';
+      return 'tracked';
+    }
+    function rank(e) {
+      const order = ['NEW','VERIFY_FAILED','OVERDUE','DRIFT','UNTRACKED','REMOVABLE','RESOLVED','PENDING_VERIFY','DEFERRED','OK'];
+      return Math.min(...statuses(e).map((s) => {
+        const i = order.indexOf(s);
+        return i < 0 ? order.length : i;
+      }));
+    }
+    function severity(e) {
+      const order = ['unknown','low','medium','high','critical'];
+      return (e.entry.advisories || []).reduce((best, a) =>
+        order.indexOf(a.severity || 'unknown') > order.indexOf(best) ? a.severity : best, 'unknown');
+    }
+    function links(e) {
+      const ids = [...new Set((e.entry.advisories || []).map((a) => a.ghsaId).filter(Boolean))];
+      return ids.map((id) =>
+        '<a class="advisory" target="_blank" rel="noopener" href="https://github.com/advisories/' +
+        encodeURIComponent(id) + '">' + esc(id) + '</a>').join('');
+    }
+    function commands(e) {
+      if (e.commands?.length) return e.commands;
+      return [];
+    }
+    function action(e) {
+      const cmd = commands(e);
+      if (cmd.length) return cmd.map((c) =>
+        '<div><code>' + esc(c) + '</code><button class="copy" data-copy="' + esc(c) + '">copy</button></div>'
+      ).join('');
+      return '<span class="muted">' + esc(e.suggestedAction || 'No action') + '</span>';
+    }
+    function details(e) {
+      const roots = e.roots || e.entry.rootPackages || [];
+      const chains = e.chains || e.entry.dependencyChains || [];
+      const ranges = e.dependerRanges || [];
+      if (!roots.length && !chains.length && !ranges.length) return '';
+      return '<details><summary>Dependency context</summary>' +
+        (roots.length ? '<div>Roots: ' + esc(roots.join(', ')) + '</div>' : '') +
+        (ranges.length ? '<div>Requested: ' + esc(ranges.join(', ')) + '</div>' : '') +
+        chains.map((c) => '<div>' + esc(c) + '</div>').join('') + '</details>';
+    }
+    function row(e) {
+      const primary = e.status || statuses(e)[0] || 'OK';
+      return '<article><div><div class="status ' + esc(primary) + '">' + esc(primary.replaceAll('_', ' ')) +
+        '</div><div class="muted">' + esc(severity(e)) + (e.dependencyKind ? ' · ' + esc(e.dependencyKind) : '') +
+        '</div></div><div><div class="pkg">' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) +
+        '</div>' + links(e) + details(e) + '</div><div class="action">' + action(e) +
+        '<div class="muted">' + esc(e.entry.reviewBy || '') + '</div></div></article>';
+    }
+    const labels = {
+      decide: 'Decide this week', waiting: 'Waiting on install', cleanup: 'Safe to remove',
+      seen: 'Seen, not applied', tracked: 'Tracked'
+    };
+    const entries = (report.entries || []).slice().sort((a, b) =>
+      rank(a) - rank(b) || String(a.entry.package).localeCompare(String(b.entry.package)));
+    let active = 'all';
+    function render() {
+      const queues = Object.keys(labels);
+      document.getElementById('board').innerHTML = queues.map((name) => {
+        const rows = entries.filter((e) => queue(e) === name && (active === 'all' || active === name));
+        return rows.length ? '<section><h2>' + labels[name] + ' · ' + rows.length +
+          '</h2><div class="list">' + rows.map(row).join('') + '</div></section>' : '';
+      }).join('') || '<div class="empty">Nothing in this view.</div>';
+    }
+    document.getElementById('title').textContent = report.title || 'supplywarden';
+    document.getElementById('cwd').textContent = report.cwd || '';
+    document.getElementById('generated').textContent = report.generatedAt || '';
+    const counts = Object.keys(labels).map((name) => ({
+      name, count: entries.filter((e) => queue(e) === name).length
+    })).filter((x) => x.count);
+    document.getElementById('summary').innerHTML =
+      '<button class="on" data-queue="all"><strong>' + entries.length + '</strong> all</button>' +
+      counts.map((x) => '<button data-queue="' + x.name + '"><strong>' + x.count + '</strong> ' +
+        labels[x.name].toLowerCase() + '</button>').join('');
+    document.addEventListener('click', (event) => {
+      const filter = event.target.closest('[data-queue]');
+      if (filter) {
+        active = filter.dataset.queue;
+        document.querySelectorAll('[data-queue]').forEach((b) => b.classList.toggle('on', b === filter));
+        render();
+      }
+      const copy = event.target.closest('[data-copy]');
+      if (copy) navigator.clipboard.writeText(copy.dataset.copy || '').catch(() => undefined);
+    });
+    render();
+  </script>
+</body>
+</html>

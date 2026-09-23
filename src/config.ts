@@ -12,8 +12,7 @@ export const DEFAULT_CONFIG: SupplywardenConfig = {
   autoApplyRootUpgrade: false,
   defaultReviewDays: 7,
   metadataPath: "security-metadata.json",
-  impactWarnThreshold: 20,
-  impactBlockThreshold: 100,
+  htmlTemplate: "default",
   audit: {
     minSeverity: "high",
   },
@@ -48,8 +47,7 @@ export function loadConfig(cwd: string): SupplywardenConfig {
       autoApplyRootUpgrade: raw.autoApplyRootUpgrade === true,
       defaultReviewDays: raw.defaultReviewDays ?? DEFAULT_CONFIG.defaultReviewDays,
       metadataPath: raw.metadataPath ?? DEFAULT_CONFIG.metadataPath,
-      impactWarnThreshold: raw.impactWarnThreshold ?? DEFAULT_CONFIG.impactWarnThreshold,
-      impactBlockThreshold: raw.impactBlockThreshold ?? DEFAULT_CONFIG.impactBlockThreshold,
+      htmlTemplate: raw.htmlTemplate?.trim() || DEFAULT_CONFIG.htmlTemplate,
       audit: {
         minSeverity: raw.audit?.minSeverity ?? DEFAULT_CONFIG.audit.minSeverity,
       },

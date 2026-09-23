@@ -28,16 +28,17 @@ npx supplywarden sync                 # metadata → package.json if someone edi
 |---------|-----|
 | `doctor` | PATH, lockfile, metadata. No CVE scan. |
 | `init` | Import existing overrides into `security-metadata.json`. |
-| `check` | Audit, triage NEW (upgrade vs override), say if overrides are still needed. `--strict` fails CI on overdue/drift/new/untracked. Optional Dependabot JSON instead of live audit. Roots/chains come from the lockfile of the detected package manager (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`). Saved **WAIT** rows are re-decided: a proven root upgrade or an override is written back into metadata; otherwise `reviewBy` moves forward. |
-| `fix --apply` | Write **new** findings: override into `package.json` + metadata. Root upgrades are **suggested** as `npm install` / `pnpm add` / `yarn add` to the next version (`npx nx migrate` only if the root is `nx`). They run from this command only if `autoApplyRootUpgrade` is true. No file → audit; or pass a Dependabot JSON. Does **not** drop REMOVABLE. |
+| `check` | Audit, triage NEW (upgrade vs override), say if overrides are still needed. `--strict` fails CI on overdue/drift/new/untracked. Optional Dependabot JSON instead of live audit. Roots/chains come from the lockfile of the detected package manager (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`). A first-sight finding is still **NEW** and is recorded as **defer** (reason + `reviewBy`) so the next check lists it as seen, not NEW. Saved **WAIT** rows are re-decided: a proven root upgrade or an override is written back into metadata; otherwise `reviewBy` moves forward. A deferred row stays deferred until `reviewBy` (then **OVERDUE**) unless a later root version is proven to close the advisory. |
+| `fix --apply` | Write **new** findings: override into `package.json` + metadata. Root upgrades are **suggested** as `npm install` / `pnpm add` / `yarn add` to the next version (`npx nx migrate` only if the root is `nx`). They run from this command only if `autoApplyRootUpgrade` is true. If the only proven fix is a breaking major upgrade, no override is written and the command says why. A pin onto a new major is still written, with a warning that dependents on the old major can break. No file → audit; or pass a Dependabot JSON. Does **not** drop REMOVABLE. |
 | `verify [pkg] [--apply]` | Temporarily drop an override, `install` + `audit`, see if the vuln comes back. No pkg → all **REMOVABLE** leftovers. With a pkg → that override even if `check` still lists it as needed. Without `--apply` always restore; with `--apply` keep the drop only if confirmed. A **KEEP** uses the same upgrade-vs-override triage as `check` (`upgradeRootThreshold`, proven `to`). Root upgrade is a suggestion unless `autoApplyRootUpgrade` is true. |
 | `sync` | Rewrite `package.json` overrides from metadata. |
 
-`check` only reads. After `check`, pick the write command from the status — not from habit:
+`check` records a first-sight finding and refreshes saved **WAIT** rows. It does not write overrides. After `check`, pick the write command from the status — not from habit:
 
 | `check` shows | Next command | What it does |
 |---------------|--------------|--------------|
-| **NEW** | copy the suggested `npm install` / `pnpm add` (or `npx nx migrate` if the root is `nx`), or `fix --apply` | Override is written by `fix --apply`. Root upgrade is a suggestion unless `autoApplyRootUpgrade` is true. |
+| **NEW** | copy the suggested `npm install` / `pnpm add` (or `npx nx migrate` if the root is `nx`), or `fix --apply` | First sighting only. The same `check` stores it as seen. Override is written by `fix --apply`. Root upgrade is a suggestion unless `autoApplyRootUpgrade` is true. |
+| **DEFERRED** (Seen) | nothing required | Already seen, suggestion not applied. The row explains the upgrade command or override version and `reviewBy`. `--strict` does not fail on it. When `reviewBy` passes it becomes **OVERDUE**. |
 | **REMOVABLE** / leftover | `verify <pkg> --apply` | Removes that override from `package.json` (after probe). |
 | **PENDING_VERIFY** | `npm install` then `check` | Override is already in `package.json`; lockfile has not picked it up yet. Not `verify` — that would drop it. |
 | **VERIFY_FAILED** | `verify <pkg>` | Last `verify`/`fix --apply` install/audit did not stick. Retry the probe. Status + date are in `security-metadata.json`. |
@@ -52,18 +53,19 @@ npx supplywarden sync                 # metadata → package.json if someone edi
 
 Jan opens the HTML board every two weeks (`check --open`). Set `defaultReviewDays` to `14` so **Overdue** lines up with that meeting, not with the default 7 days.
 
-The board is four piles. Work **Decide** top to bottom, then **Cleanup**. **Tracked** is the ledger of overrides you already accepted.
+The board is five piles. Work **Decide** top to bottom, then **Cleanup**. **Seen** is a finding you already looked at and did not apply. **Tracked** is the ledger of overrides you already accepted.
 
 ```
 Decide this week  →  new or stuck items (act now)
 Waiting           →  override written, lockfile not installed yet
 Cleanup           →  safe to drop after verify --apply
+Seen, not applied →  recorded on an earlier check; not NEW again until reviewBy
 Tracked           →  still needed (Ok, including Ok · verified)
 ```
 
 A package walks the board like this:
 
-1. **New** — audit found it, no override yet. Meeting decision: run the suggested root upgrade (`npm install pkg@next` / `pnpm add` / `yarn add`; `npx nx migrate` only when the root is `nx`) or pin an override (`fix --apply`). `fix --apply` only starts the upgrade itself when `autoApplyRootUpgrade` is true.
+1. **New** — audit found it, no record yet. This check still shows New and writes a seen row (the suggested upgrade or override, plus `reviewBy`). Meeting decision: run the suggested root upgrade (`npm install pkg@next` / `pnpm add` / `yarn add`; `npx nx migrate` only when the root is `nx`) or pin an override (`fix --apply`). `fix --apply` only starts the upgrade itself when `autoApplyRootUpgrade` is true. If you do neither, the next check moves it to **Seen**, not New.
 2. **Pending install** — override is in `package.json`, lockfile is old. Run `npm install` / `pnpm install`, then `check`. Do not `verify` yet (that would drop the new pin).
 3. **Ok** — override is in the tree and holding. Next meeting it is still Ok unless the review deadline passed.
 4. **Overdue** — `reviewBy` is past. Jan re-opens it: `why <pkg>`, then `verify <pkg>` to see if the pin is still required.
@@ -100,7 +102,7 @@ Without `--strict`, `check` always exits 0: it prints the report, CI stays green
 
 With `--strict` it is a gate (exit 1) if any of these is true:
 
-- **NEW** — untracked audit finding (not yet an override)
+- **NEW** — first-sight audit finding (a seen/deferred row does not fail the gate)
 - **UNTRACKED** — override in `package.json` but not in `security-metadata.json`
 - **OVERDUE** on a high/critical advisory — review date passed
 - **DRIFT** — metadata and `package.json` disagree
@@ -122,8 +124,7 @@ File: `.supplywardenrc.json` in the project (example: `.supplywardenrc.example.j
 | `dateLocale` | `"de"` | CLI and HTML dates: `"de"` (`16.09.2026, 20:12`) or `"en"` (`Sep 16, 2026, 8:12 PM`). `security-metadata.json` stays ISO. |
 | `timeZone` | `"Europe/Berlin"` | Timezone for those displayed dates. |
 | `metadataPath` | `"security-metadata.json"` | Where override records live. |
-| `impactWarnThreshold` | `20` | `fix --apply` logs a warning if the estimated lockfile change is this large (does not block). |
-| `impactBlockThreshold` | `100` | `fix --apply` refuses if the estimated change is this large. |
+| `htmlTemplate` | `"default"` | HTML board design: `"default"`, the lightweight `"compact"` board, or a path to your own HTML template. Relative paths resolve from the project root. A custom file must contain `<!--SUPPLYWARDEN_DATA-->`, which supplywarden replaces with the report JSON. |
 
 **`minSeverity: "high"`** is the usual CI setting: the audit still runs in full, but medium/low never become `NEW` and do not fail `--strict`. That cuts noise (prototype-pollution-in-a-dev-tool, etc.) so the gate stays about exploitable prod issues.
 

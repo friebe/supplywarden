@@ -33,7 +33,7 @@
           "package": { "type": "string" },
           "forcedVersion": { "type": "string" },
           "reason": { "type": "string" },
-          "strategy": { "enum": ["override", "upgrade", "wait"] },
+          "strategy": { "enum": ["override", "upgrade", "wait", "defer"] },
           "advisories": { "type": "array" }
         }
       }

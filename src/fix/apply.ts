@@ -1,5 +1,4 @@
 import { findDuplicate, dedupeOrSupersede } from "../validation/collisions.js";
-import { assessImpact, estimateImpact } from "../validation/impact-diff.js";
 import { blockingIssues, runPreApplyGate } from "../validation/override-gate.js";
 import { runPostVerify } from "../validation/post-verify.js";
 import { readMetadata, writeMetadata, newEntryId } from "../metadata/store.js";
@@ -10,7 +9,7 @@ import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/sna
 import { actorName } from "../config.js";
 import { createLiveInstall } from "../install/client.js";
 import { quotedUpgradeCommands, rootUpgradeCommands } from "./upgrade-command.js";
-import { formatUpgradeTargets } from "../decision/engine.js";
+import { breakingPinNote, breakingUpgradeNote, formatUpgradeTargets } from "../decision/engine.js";
 import type {
   AuditClient,
   CommandResult,
@@ -70,21 +69,15 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     registry: opts.registry,
   });
 
-  const impact = assessImpact(estimateImpact(graph.chains.length, graph.roots.length), config);
-  if (impact.blocked) {
-    issues.push({
-      code: "IMPACT_BLOCKED",
-      message: `Lockfile-Impact ${impact.changedPackages} exceeds block threshold ${config.impactBlockThreshold}`,
-      blocking: true,
-    });
-  }
-
   const blocked = blockingIssues(issues);
-  const report = baseReport(opts, issues, "Pre-apply validation", { impact });
+  const report = baseReport(opts, issues, "Pre-apply validation");
 
   if (decision.strategy === "upgrade") {
-    return applyRootUpgrade(opts, { messages, blocked, report, impact });
+    return applyRootUpgrade(opts, { messages, blocked, report });
   }
+
+  const pinNote = breakingPinNote(group.package, graph.versions, forcedVersion);
+  if (pinNote) messages.push(pinNote);
 
   if (!opts.apply) {
     messages.push("Dry-run: pass --apply to write package.json and security-metadata.json");
@@ -100,12 +93,6 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
         ...blocked.map((i) => (i.hint ? `${i.message} (${i.hint})` : i.message)),
       ],
     };
-  }
-
-  if (impact.warning) {
-    messages.push(
-      `Impact: ${impact.changedPackages} packages (≥ warn threshold ${config.impactWarnThreshold})`,
-    );
   }
 
   const files = [config.metadataPath, "package.json"];
@@ -195,6 +182,11 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   };
 }
 
+function noteBreakingUpgradeSkip(messages: string[], decision: Decision) {
+  const note = breakingUpgradeNote(decision);
+  if (note) messages.push(note);
+}
+
 function applyWait(opts: ApplyOptions, report: ReportModel): CommandResult {
   const { cwd, config, group, graph, decision } = opts;
   const reviewBy = addDaysIso(config.defaultReviewDays);
@@ -265,11 +257,10 @@ async function applyRootUpgrade(
     messages: string[];
     blocked: import("../types.js").ValidationIssue[];
     report: ReportModel;
-    impact: import("../types.js").ImpactDiff;
   },
 ): Promise<CommandResult> {
   const { cwd, config, group, decision } = opts;
-  const { messages, blocked, report, impact } = ctx;
+  const { messages, blocked, report } = ctx;
   const pm = resolvePackageManager(cwd);
   const commands = rootUpgradeCommands(pm, decision.upgradeTargets ?? []);
   const quoted = quotedUpgradeCommands(commands);
@@ -278,11 +269,6 @@ async function applyRootUpgrade(
   const nx = commands.find((c) => c.kind === "nx");
   const installCmd = commands.find((c) => c.kind === "install");
 
-  if (impact.warning) {
-    messages.push(
-      `Impact: ${impact.changedPackages} packages (≥ warn threshold ${config.impactWarnThreshold})`,
-    );
-  }
   if (commands.length) {
     const bump = formatUpgradeTargets(decision);
     if (bump) messages.push(`Upgrade ${bump}`);
@@ -295,6 +281,7 @@ async function applyRootUpgrade(
   }
 
   if (!opts.apply) {
+    noteBreakingUpgradeSkip(messages, decision);
     messages.push(
       config.autoApplyRootUpgrade
         ? hasNx && !hasInstall
@@ -308,6 +295,7 @@ async function applyRootUpgrade(
   }
 
   if (!config.autoApplyRootUpgrade) {
+    noteBreakingUpgradeSkip(messages, decision);
     messages.push(
       `Root upgrade is a suggestion — run ${quoted} (set autoApplyRootUpgrade to run it from fix --apply)`,
     );
@@ -327,12 +315,14 @@ async function applyRootUpgrade(
   }
 
   if (opts.skipInstall) {
+    noteBreakingUpgradeSkip(messages, decision);
     messages.push(`Not writing package.json — run ${quoted}`);
     return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
   }
 
   const install = opts.install ?? createLiveInstall();
   if (!install.runCommand) {
+    noteBreakingUpgradeSkip(messages, decision);
     messages.push(`Not writing package.json — run ${quoted}`);
     return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
   }

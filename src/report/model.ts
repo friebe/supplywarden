@@ -64,13 +64,6 @@ export function toMarkdown(report: ReportModel): string {
     lines.push("");
   }
 
-  if (report.impact) {
-    lines.push(
-      `**Lockfile impact:** ${report.impact.changedPackages} package(s) would change (warn: ${report.impact.warning ? "yes" : "no"}, block: ${report.impact.blocked ? "yes" : "no"})`,
-      "",
-    );
-  }
-
   const entries = sortCheckEntries(report.entries).map(withReportCommands);
   const news = entries.filter((e) => e.status === "NEW" || e.statuses.includes("NEW"));
   if (news.length) {
@@ -95,6 +88,16 @@ export function toMarkdown(report: ReportModel): string {
       for (const c of e.commands ?? nextCommands(e)) {
         lines.push(`  - \`${c}\``);
       }
+    }
+    lines.push("");
+  }
+  const deferred = entries.filter(
+    (e) => e.statuses.includes("DEFERRED") && !e.statuses.includes("NEW"),
+  );
+  if (deferred.length) {
+    lines.push("## Seen, not applied", "");
+    for (const e of deferred) {
+      lines.push(`- **${e.entry.package}**: ${e.suggestedAction}`);
     }
     lines.push("");
   }
