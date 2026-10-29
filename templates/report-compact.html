@@ -1,176 +1,251 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>supplywarden · compact</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>supplywarden</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f4f5f2;
-      --paper: #fff;
-      --ink: #17201b;
-      --muted: #68716b;
-      --line: #dfe3df;
-      --accent: #315f49;
-      --danger: #a43c32;
-      --warn: #8b6118;
+      color-scheme: light dark;
+      --bg: #f6f5f2;
+      --card: #fffcf8;
+      --ink: #1c1917;
+      --muted: #78716c;
+      --line: #e6e2da;
+      --amber: #9a3412;
+      --amber-bg: #fff4e8;
+      --blue: #1e3a8a;
+      --rose: #9f1239;
     }
-    * { box-sizing: border-box }
-    body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, sans-serif }
-    main { width: min(980px, calc(100% - 28px)); margin: 28px auto 64px }
-    header { display: flex; justify-content: space-between; gap: 24px; align-items: end; margin-bottom: 20px }
-    h1 { margin: 0; font-size: 20px; letter-spacing: -.02em }
-    h2 { margin: 26px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em }
-    .meta, .muted { color: var(--muted); font-size: 12px }
-    .summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px }
-    .summary button {
-      border: 1px solid var(--line); border-radius: 999px; background: var(--paper);
-      color: var(--muted); padding: 5px 10px; cursor: pointer
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141210;
+        --card: #1c1917;
+        --ink: #fafaf9;
+        --muted: #a8a29e;
+        --line: #44403c;
+        --amber: #fdba74;
+        --amber-bg: #2a2118;
+        --blue: #93c5fd;
+        --rose: #fda4af;
+      }
     }
-    .summary button.on { border-color: var(--accent); color: var(--accent) }
-    .summary strong { color: var(--ink) }
-    .list { display: grid; gap: 7px }
-    article {
-      display: grid; grid-template-columns: 115px minmax(180px, 1fr) minmax(260px, 1.25fr);
-      gap: 14px; padding: 13px 15px; background: var(--paper); border: 1px solid var(--line);
-      border-radius: 8px
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
     }
-    .status { font-weight: 650 }
-    .NEW, .VERIFY_FAILED, .OVERDUE { color: var(--danger) }
-    .DRIFT, .UNTRACKED { color: var(--warn) }
-    .REMOVABLE, .RESOLVED { color: var(--accent) }
-    .pkg { font-weight: 650; overflow-wrap: anywhere }
-    .advisory { color: var(--accent); text-decoration: none; font-size: 12px; margin-right: 7px }
-    .action { min-width: 0 }
-    code {
-      display: inline-block; max-width: 100%; overflow-wrap: anywhere; color: var(--ink);
-      background: #f1f3f0; border-radius: 4px; padding: 3px 6px; font: 12px/1.4 ui-monospace, monospace
+    main { max-width: 980px; margin: 0 auto; padding: 20px 16px 48px; }
+    h1 { font-size: 16px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
+    .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .counts { display: flex; gap: 8px; margin: 18px 0 0; }
+    .counts button {
+      font: inherit;
+      color: var(--ink);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px 10px;
+      min-width: 92px;
+      text-align: left;
+      cursor: pointer;
     }
-    .copy { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 3px 0 3px 6px }
-    details { margin-top: 5px; color: var(--muted); font-size: 12px }
-    summary { cursor: pointer }
-    .empty { color: var(--muted); padding: 18px 0 }
-    @media (max-width: 700px) {
-      header { display: block }
-      article { grid-template-columns: 1fr }
+    .counts button.on { border-color: var(--ink); }
+    .counts .n { display: block; font-size: 22px; font-weight: 650; letter-spacing: -0.04em; line-height: 1.1; }
+    .counts .l { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .clear { margin: 16px 0 0; color: var(--muted); }
+    section { margin-top: 26px; }
+    h2 { font-size: 12px; font-weight: 650; margin: 0 0 4px; }
+    .note { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+    .sev.high, .sev.critical { color: var(--rose); }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .sheet { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+    table {
+      width: 100%;
+      min-width: 640px;
+      border-collapse: collapse;
+      background: var(--card);
     }
-    @media print {
-      body { background: #fff }
-      main { width: 100%; margin: 0 }
-      .summary, .copy { display: none }
-      article { break-inside: avoid }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 7px 10px;
     }
+    td { padding: 7px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+    .name { font-weight: 650; }
+    tr.mismatch { background: var(--amber-bg); }
+    tr.mismatch .pin { color: var(--amber); font-weight: 650; }
+    td code { display: block; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+    td.do code { color: var(--ink); margin-bottom: 4px; }
+    td.do .sub { display: block; }
   </style>
 </head>
 <body>
   <main>
-    <header>
-      <div><h1 id="title">supplywarden</h1><div class="meta" id="cwd"></div></div>
-      <div class="meta" id="generated"></div>
-    </header>
-    <nav class="summary" id="summary"></nav>
-    <div id="board"></div>
+    <h1>supplywarden</h1>
+    <div class="meta" id="meta"></div>
+    <div class="counts" id="counts"></div>
+    <p class="clear" id="clear" hidden>Nothing to upgrade or pin.</p>
+    <div id="out"></div>
   </main>
   <script type="application/json" id="supplywarden-data"><!--SUPPLYWARDEN_DATA--></script>
   <script>
-    const report = JSON.parse(document.getElementById('supplywarden-data').textContent || '{}');
-    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
-      {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
-    ));
-    const statuses = (e) => e.statuses?.length ? e.statuses : [e.status];
-    const removable = (e) => statuses(e).includes('REMOVABLE') || statuses(e).includes('RESOLVED');
-    function queue(e) {
-      const s = statuses(e);
-      if (s.some((x) => ['NEW','OVERDUE','VERIFY_FAILED','DRIFT','UNTRACKED'].includes(x))) return 'decide';
-      if (s.includes('PENDING_VERIFY')) return 'waiting';
-      if (removable(e)) return 'cleanup';
-      if (s.includes('DEFERRED')) return 'seen';
-      return 'tracked';
+    const report = JSON.parse(document.getElementById("supplywarden-data").textContent || "{}");
+    const entries = report.entries || [];
+    const order = { upgrade: 0, override: 1, wait: 2, drop: 3, keep: 4 };
+    const todoActions = new Set(["upgrade", "override", "wait"]);
+
+    const parts = String(report.cwd || "").split(/[/\\]/).filter(Boolean);
+    const where = parts[parts.length - 1] || "";
+    document.getElementById("meta").textContent = [report.generatedAt, where].filter(Boolean).join(" · ");
+
+    function nameOf(spec) {
+      const at = String(spec).lastIndexOf("@");
+      return at > 0 ? spec.slice(0, at) : spec;
     }
-    function rank(e) {
-      const order = ['NEW','VERIFY_FAILED','OVERDUE','DRIFT','UNTRACKED','REMOVABLE','RESOLVED','PENDING_VERIFY','DEFERRED','OK'];
-      return Math.min(...statuses(e).map((s) => {
-        const i = order.indexOf(s);
-        return i < 0 ? order.length : i;
-      }));
-    }
-    function severity(e) {
-      const order = ['unknown','low','medium','high','critical'];
-      return (e.entry.advisories || []).reduce((best, a) =>
-        order.indexOf(a.severity || 'unknown') > order.indexOf(best) ? a.severity : best, 'unknown');
-    }
-    function links(e) {
-      const ids = [...new Set((e.entry.advisories || []).map((a) => a.ghsaId).filter(Boolean))];
-      return ids.map((id) =>
-        '<a class="advisory" target="_blank" rel="noopener" href="https://github.com/advisories/' +
-        encodeURIComponent(id) + '">' + esc(id) + '</a>').join('');
-    }
-    function commands(e) {
-      if (e.commands?.length) return e.commands;
-      return [];
-    }
-    function action(e) {
-      const cmd = commands(e);
-      if (cmd.length) return cmd.map((c) =>
-        '<div><code>' + esc(c) + '</code><button class="copy" data-copy="' + esc(c) + '">copy</button></div>'
-      ).join('');
-      return '<span class="muted">' + esc(e.suggestedAction || 'No action') + '</span>';
-    }
-    function details(e) {
-      const roots = e.roots || e.entry.rootPackages || [];
-      const chains = e.chains || e.entry.dependencyChains || [];
-      const ranges = e.dependerRanges || [];
-      if (!roots.length && !chains.length && !ranges.length) return '';
-      return '<details><summary>Dependency context</summary>' +
-        (roots.length ? '<div>Roots: ' + esc(roots.join(', ')) + '</div>' : '') +
-        (ranges.length ? '<div>Requested: ' + esc(ranges.join(', ')) + '</div>' : '') +
-        chains.map((c) => '<div>' + esc(c) + '</div>').join('') + '</details>';
-    }
-    function row(e) {
-      const primary = e.status || statuses(e)[0] || 'OK';
-      return '<article><div><div class="status ' + esc(primary) + '">' + esc(primary.replaceAll('_', ' ')) +
-        '</div><div class="muted">' + esc(severity(e)) + (e.dependencyKind ? ' · ' + esc(e.dependencyKind) : '') +
-        '</div></div><div><div class="pkg">' + esc(e.entry.package) + '@' + esc(e.entry.forcedVersion) +
-        '</div>' + links(e) + details(e) + '</div><div class="action">' + action(e) +
-        '<div class="muted">' + esc(e.entry.reviewBy || '') + '</div></div></article>';
-    }
-    const labels = {
-      decide: 'Decide this week', waiting: 'Waiting on install', cleanup: 'Safe to remove',
-      seen: 'Seen, not applied', tracked: 'Tracked'
-    };
-    const entries = (report.entries || []).slice().sort((a, b) =>
-      rank(a) - rank(b) || String(a.entry.package).localeCompare(String(b.entry.package)));
-    let active = 'all';
-    function render() {
-      const queues = Object.keys(labels);
-      document.getElementById('board').innerHTML = queues.map((name) => {
-        const rows = entries.filter((e) => queue(e) === name && (active === 'all' || active === name));
-        return rows.length ? '<section><h2>' + labels[name] + ' · ' + rows.length +
-          '</h2><div class="list">' + rows.map(row).join('') + '</div></section>' : '';
-      }).join('') || '<div class="empty">Nothing in this view.</div>';
-    }
-    document.getElementById('title').textContent = report.title || 'supplywarden';
-    document.getElementById('cwd').textContent = report.cwd || '';
-    document.getElementById('generated').textContent = report.generatedAt || '';
-    const counts = Object.keys(labels).map((name) => ({
-      name, count: entries.filter((e) => queue(e) === name).length
-    })).filter((x) => x.count);
-    document.getElementById('summary').innerHTML =
-      '<button class="on" data-queue="all"><strong>' + entries.length + '</strong> all</button>' +
-      counts.map((x) => '<button data-queue="' + x.name + '"><strong>' + x.count + '</strong> ' +
-        labels[x.name].toLowerCase() + '</button>').join('');
-    document.addEventListener('click', (event) => {
-      const filter = event.target.closest('[data-queue]');
-      if (filter) {
-        active = filter.dataset.queue;
-        document.querySelectorAll('[data-queue]').forEach((b) => b.classList.toggle('on', b === filter));
-        render();
+    function via(entry) {
+      const roots = (entry.roots || []).map(nameOf).filter((name) => name !== entry.package);
+      if (roots.length) {
+        const shown = roots.slice(0, 2).join(", ");
+        return roots.length > 2 ? shown + " +" + (roots.length - 2) : shown;
       }
-      const copy = event.target.closest('[data-copy]');
-      if (copy) navigator.clipboard.writeText(copy.dataset.copy || '').catch(() => undefined);
-    });
-    render();
+      return (entry.roots || []).length ? "direct" : "";
+    }
+    function firstSentence(text) {
+      const value = String(text || "").trim();
+      const cut = value.search(/\.\s/);
+      return cut === -1 ? value : value.slice(0, cut + 1);
+    }
+    function exactPin(pin) {
+      return typeof pin === "string" && /^\d+\.\d+\.\d+/.test(pin);
+    }
+    function offPin(entry) {
+      if (!exactPin(entry.forcedVersion) || !(entry.installed || []).length) return false;
+      return entry.installed.some((version) => version !== entry.forcedVersion);
+    }
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    const groups = {
+      todo: entries.filter((entry) => todoActions.has(entry.action)).sort((a, b) => order[a.action] - order[b.action] || a.package.localeCompare(b.package)),
+      drop: entries.filter((entry) => entry.action === "drop").sort((a, b) => a.package.localeCompare(b.package)),
+      keep: entries.filter((entry) => entry.action === "keep").sort((a, b) => Number(offPin(b)) - Number(offPin(a)) || a.package.localeCompare(b.package)),
+    };
+
+    let current = "all";
+    const counts = document.getElementById("counts");
+    const choices = [
+      ["todo", groups.todo.length, "To do"],
+      ["drop", groups.drop.length, "Unused"],
+      ["keep", groups.keep.length, "Holding"],
+    ];
+    for (const [key, count, label] of choices) {
+      if (key !== "todo" && count === 0) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.append(el("span", "n", String(count)), el("span", "l", label));
+      button.addEventListener("click", () => {
+        current = current === key ? "all" : key;
+        for (const other of counts.querySelectorAll("button")) other.classList.toggle("on", other === button && current === key);
+        draw();
+      });
+      counts.appendChild(button);
+    }
+
+    function table(headers, rows) {
+      const sheet = el("div", "sheet");
+      const wrap = document.createElement("table");
+      const head = document.createElement("thead");
+      const hr = document.createElement("tr");
+      for (const header of headers) hr.append(el("th", "", header));
+      head.append(hr);
+      wrap.append(head);
+      const body = document.createElement("tbody");
+      for (const row of rows) body.append(row);
+      wrap.append(body);
+      sheet.append(wrap);
+      return sheet;
+    }
+
+    function draw() {
+      const out = document.getElementById("out");
+      out.replaceChildren();
+      const showTodo = current === "all" || current === "todo";
+      const showDrop = (current === "all" || current === "drop") && groups.drop.length;
+      const showKeep = (current === "all" || current === "keep") && groups.keep.length;
+      document.getElementById("clear").hidden = !(showTodo && groups.todo.length === 0);
+
+      if (showTodo && groups.todo.length) {
+        const section = document.createElement("section");
+        section.append(el("h2", "", "To do"));
+        section.append(table(["Package", "Action", "Via", "Do"], groups.todo.map((entry) => {
+          const tr = document.createElement("tr");
+          const action = document.createElement("td");
+          action.append(el("div", "", entry.action));
+          if (entry.severity && entry.severity !== "unknown") action.append(el("div", "sub sev " + entry.severity, entry.severity));
+          if (entry.dependencyKind && entry.dependencyKind !== "production") action.append(el("div", "sub", entry.dependencyKind));
+          const from = el("td", "via", via(entry) || "—");
+          const chain = (entry.chains || [])[0];
+          if (chain) from.title = chain;
+          const done = el("td", "do");
+          const command = (entry.commands || [])[0];
+          if (command) done.append(el("code", "", command));
+          const why = firstSentence(entry.summary);
+          if (why) done.append(el("div", "sub", why));
+          tr.append(el("td", "name", entry.package), action, from, done);
+          return tr;
+        })));
+        out.append(section);
+      }
+      if (showDrop) {
+        const section = document.createElement("section");
+        section.append(el("h2", "", "Unused"), el("p", "note", "These overrides do not change what is installed."));
+        section.append(table(["Package", "Why", "Do"], groups.drop.map((entry) => {
+          const tr = document.createElement("tr");
+          const done = el("td", "do");
+          const command = (entry.commands || [])[0];
+          if (command) done.append(el("code", "", command));
+          tr.append(el("td", "name", entry.package), el("td", "", firstSentence(entry.summary)), done);
+          return tr;
+        })));
+        out.append(section);
+      }
+      if (showKeep) {
+        const section = document.createElement("section");
+        const drifted = groups.keep.some(offPin);
+        section.append(el("h2", "", "Holding"));
+        section.append(el("p", "note", drifted
+          ? "The audit is quiet. Highlighted rows are installed on a different version than the pin."
+          : "The audit is quiet. These pins are what is installed."));
+        section.append(table(["Package", "Installed", "Pin", "Via"], groups.keep.map((entry) => {
+          const tr = document.createElement("tr");
+          if (offPin(entry)) tr.className = "mismatch";
+          tr.append(
+            el("td", "name", entry.package),
+            el("td", "", (entry.installed || []).join(", ") || "—"),
+            el("td", "pin", entry.forcedVersion || "—"),
+            el("td", "via", via(entry) || "—"),
+          );
+          return tr;
+        })));
+        out.append(section);
+      }
+      if (!entries.length) {
+        out.append(el("p", "clear", "Nothing in the audit, and no overrides in package.json."));
+        document.getElementById("clear").hidden = true;
+      }
+    }
+    draw();
   </script>
 </body>
 </html>

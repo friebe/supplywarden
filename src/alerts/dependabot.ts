@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { maxSatisfying, valid } from "semver";
-import type { Advisory, DependencyKind, PackageAlertGroup, Severity } from "../types.js";
+import { valid } from "semver";
+import type { Advisory, PackageAlertGroup, Severity } from "../types.js";
 
 export type DependabotAlert = {
   number?: number;
@@ -46,18 +45,6 @@ export function normalizeSeverity(value?: string): Severity {
   return "unknown";
 }
 
-export function parseAlert(raw: unknown): DependabotAlert {
-  if (!raw || typeof raw !== "object") throw new Error("Alert JSON is not an object");
-  return raw as DependabotAlert;
-}
-
-export function loadAlertFile(path: string): DependabotAlert | DependabotAlert[] {
-  if (!existsSync(path)) throw new Error(`Alert file not found: ${path}`);
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  if (Array.isArray(parsed)) return parsed.map(parseAlert);
-  return parseAlert(parsed);
-}
-
 export function alertToAdvisory(alert: DependabotAlert): Advisory {
   return {
     ghsaId: alert.security_advisory?.ghsa_id,
@@ -74,15 +61,7 @@ export function maxSeverity(advisories: Advisory[]): Severity {
   }, "unknown");
 }
 
-export function forcedVersionFromAdvisories(advisories: Advisory[]): string | undefined {
-  const versions = advisories
-    .map((a) => a.patchedVersion)
-    .filter((v): v is string => Boolean(v && valid(v)));
-  if (versions.length === 0) return undefined;
-  return versions.sort((a, b) => (maxSatisfying([a, b], "*") === a ? -1 : 1))[versions.length - 1];
-}
-
-/** Highest patched version that closes all advisories. */
+/** Highest patched version named on the advisories. */
 export function highestPatchedVersion(advisories: Advisory[]): string | undefined {
   const versions = advisories
     .map((a) => a.patchedVersion)
@@ -107,14 +86,6 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-export function dependabotScopeToKind(scope?: string): DependencyKind | undefined {
-  const raw = (scope ?? "").toLowerCase().trim();
-  if (raw === "development" || raw === "dev") return "development";
-  if (raw === "runtime" || raw === "production") return "production";
-  if (raw === "optional") return "optional";
-  return undefined;
-}
-
 export function groupAlerts(alerts: DependabotAlert[]): PackageAlertGroup[] {
   const map = new Map<string, PackageAlertGroup>();
   for (const alert of alerts) {
@@ -123,7 +94,6 @@ export function groupAlerts(alerts: DependabotAlert[]): PackageAlertGroup[] {
     const manifestPath = alert.dependency?.manifest_path ?? "package.json";
     const key = `${pkg}::${manifestPath}`;
     const advisory = alertToAdvisory(alert);
-    const kind = dependabotScopeToKind(alert.dependency?.scope);
     const existing = map.get(key);
     if (!existing) {
       map.set(key, {
@@ -133,29 +103,13 @@ export function groupAlerts(alerts: DependabotAlert[]): PackageAlertGroup[] {
         maxSeverity: advisory.severity,
         forcedVersion: advisory.patchedVersion,
         mergedVulnerableRange: advisory.vulnerableRange,
-        dependencyKind: kind,
       });
       continue;
     }
     existing.advisories.push(advisory);
     existing.maxSeverity = maxSeverity(existing.advisories);
     existing.forcedVersion = highestPatchedVersion(existing.advisories);
-    existing.mergedVulnerableRange = existing.advisories
-      .map((a) => a.vulnerableRange)
-      .join(" || ");
-    existing.dependencyKind = mergeAlertKind(existing.dependencyKind, kind);
+    existing.mergedVulnerableRange = existing.advisories.map((a) => a.vulnerableRange).join(" || ");
   }
   return [...map.values()];
-}
-
-function mergeAlertKind(a?: DependencyKind, b?: DependencyKind): DependencyKind | undefined {
-  if (!a) return b;
-  if (!b) return a;
-  if (a === "production" || b === "production") return "production";
-  if (a === b) return a;
-  return "production";
-}
-
-export function alertsFromInput(input: DependabotAlert | DependabotAlert[]): DependabotAlert[] {
-  return Array.isArray(input) ? input : [input];
 }

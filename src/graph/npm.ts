@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DependencyChain, GraphAnalysis, PackageManager, RootPackage } from "../types.js";
+import type {
+  DependencyChain,
+  Depender,
+  GraphAnalysis,
+  PackageManager,
+  RootPackage,
+} from "../types.js";
 import { dependencyKindLabel, inferDependencyKind, mergeDependencyKind } from "./kind.js";
 import { emptyGraph } from "./flat.js";
 import { analyzePnpmGraph, hasPnpmLock } from "./pnpm.js";
@@ -47,9 +53,9 @@ function parentPath(lockPath: string): string | null {
 function allDeps(meta: LockPackage | undefined): Record<string, string> {
   if (!meta) return {};
   return {
-    ...(meta.dependencies ?? {}),
-    ...(meta.optionalDependencies ?? {}),
-    ...(meta.devDependencies ?? {}),
+    ...meta.dependencies,
+    ...meta.optionalDependencies,
+    ...meta.devDependencies,
   };
 }
 
@@ -66,7 +72,16 @@ export function analyzeNpmGraph(cwd: string, pkgName: string): GraphAnalysis {
 function analyzeNpmLockGraph(cwd: string, pkgName: string): GraphAnalysis {
   const lock = loadLockfile(cwd);
   if (!lock?.packages) {
-    return { package: pkgName, versions: [], inTree: false, roots: [], chains: [], dependerRanges: [] };
+    return {
+      package: pkgName,
+      versions: [],
+      inTree: false,
+      roots: [],
+      chains: [],
+      dependerRanges: [],
+      dependers: [],
+      directs: [],
+    };
   }
 
   const packages = lock.packages;
@@ -79,19 +94,12 @@ function analyzeNpmLockGraph(cwd: string, pkgName: string): GraphAnalysis {
   });
 
   const versions = [...new Set(matches.map(([, m]) => m.version).filter(Boolean))] as string[];
-  const dependerRanges = [
-    ...new Set(
-      Object.values(packages)
-        .map((meta) => allDeps(meta)[pkgName])
-        .filter((range): range is string => Boolean(range)),
-    ),
-  ];
+  const dependers = collectDependers(packages, pkgName);
+  const dependerRanges = [...new Set(dependers.map((depender) => depender.range))];
   const chains: DependencyChain[] = [];
   const rootMap = new Map<string, RootPackage>();
 
-  const dependents = Object.entries(packages).filter(
-    ([, meta]) => pkgName in allDeps(meta),
-  );
+  const dependents = Object.entries(packages).filter(([, meta]) => pkgName in allDeps(meta));
 
   for (const [lockPath, meta] of matches) {
     const nestedChain: string[] = [];
@@ -127,7 +135,10 @@ function analyzeNpmLockGraph(cwd: string, pkgName: string): GraphAnalysis {
           continue;
         }
         const depName = nodeName(depPath);
-        const chain = [`${depName}@${packages[depPath]?.version ?? "?"}`, `${pkgName}@${meta.version ?? "?"}`];
+        const chain = [
+          `${depName}@${packages[depPath]?.version ?? "?"}`,
+          `${pkgName}@${meta.version ?? "?"}`,
+        ];
         chains.push({ path: chain, package: pkgName, version: meta.version ?? "?" });
         if (depName in directDeps) {
           rootMap.set(depName, {
@@ -159,6 +170,11 @@ function analyzeNpmLockGraph(cwd: string, pkgName: string): GraphAnalysis {
     roots,
     chains,
     dependerRanges,
+    dependers,
+    directs: Object.keys(directDeps).flatMap((name) => {
+      const version = packages[`node_modules/${name}`]?.version;
+      return version ? [{ name, version }] : [];
+    }),
     dependencyKind: matches.length
       ? inferDependencyKind({
           pkgName,
@@ -170,6 +186,23 @@ function analyzeNpmLockGraph(cwd: string, pkgName: string): GraphAnalysis {
         })
       : undefined,
   };
+}
+
+function collectDependers(packages: Record<string, LockPackage>, pkgName: string): Depender[] {
+  const out: Depender[] = [];
+  const seen = new Set<string>();
+  for (const [lockPath, meta] of Object.entries(packages)) {
+    const range = allDeps(meta)[pkgName];
+    if (!range) continue;
+    const parent = lockPath === "" ? meta.name || "the project" : nodeName(lockPath);
+    if (parent === pkgName) continue;
+    const version = lockPath === "" ? undefined : meta.version;
+    const key = `${parent}\0${range}\0${version ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(version ? { parent, range, version } : { parent, range });
+  }
+  return out.sort((a, b) => a.parent.localeCompare(b.parent));
 }
 
 function stripAtVersion(segment: string): string {
@@ -226,7 +259,8 @@ function packageManagerFromManifest(cwd: string): "npm" | "pnpm" | "yarn" | unde
   if (!existsSync(path)) return undefined;
   try {
     const pkg = JSON.parse(readFileSync(path, "utf8")) as { packageManager?: unknown };
-    const raw = String(pkg.packageManager ?? "").trim().toLowerCase();
+    const field = pkg.packageManager;
+    const raw = (typeof field === "string" ? field : "").trim().toLowerCase();
     const name = raw.split("@")[0];
     if (name === "npm" || name === "pnpm" || name === "yarn") return name;
   } catch {

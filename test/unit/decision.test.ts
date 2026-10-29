@@ -1,9 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { highestPatchedVersion, groupAlerts } from "../../src/alerts/dependabot.js";
-import { recommend, stillVulnerable, upgradeTargetTo, formatUpgradeTarget, formatUpgradeTargets, resolveUpgradeDecision, lookupFromRegistry, decide } from "../../src/decision/engine.js";
-import { loadAlertFile } from "../../src/alerts/dependabot.js";
-import { join } from "node:path";
-import { FIXTURES_ROOT } from "../helpers/fixture-project.js";
+import {
+  recommend,
+  stillVulnerable,
+  formatUpgradeTarget,
+  formatUpgradeTargets,
+  resolveUpgradeDecision,
+  lookupFromRegistry,
+  decide,
+  overrideScopes,
+  rangeRejectionNote,
+} from "../../src/decision/engine.js";
 import { DEFAULT_CONFIG } from "../../src/config.js";
 import { createOfflineRegistry } from "../../src/registry/verify.js";
 import type { Advisory, Decision, DependencyChain } from "../../src/types.js";
@@ -57,78 +64,87 @@ describe("decision engine", () => {
       config: DEFAULT_CONFIG,
     });
     expect(decision.strategy).toBe("wait");
+    expect(decision.reason).toMatch(/more than the threshold of 3/);
+    expect(decision.reason).toMatch(/development dependency/);
+    expect(decision.reason).toMatch(/No root upgrade and no pin/);
   });
 });
 
 describe("advisory grouping", () => {
   it("merges three hono alerts onto the highest patch", () => {
-    const alerts = loadAlertFile(join(FIXTURES_ROOT, "alerts/hono-triple.json"));
-    const groups = groupAlerts(Array.isArray(alerts) ? alerts : [alerts]);
+    const groups = groupAlerts([
+      {
+        dependency: { package: { name: "hono", ecosystem: "npm" }, manifest_path: "package.json" },
+        security_advisory: { ghsa_id: "GHSA-aaa", severity: "high" },
+        security_vulnerability: {
+          vulnerable_version_range: "< 4.6.5",
+          first_patched_version: { identifier: "4.6.5" },
+        },
+      },
+      {
+        dependency: { package: { name: "hono", ecosystem: "npm" }, manifest_path: "package.json" },
+        security_advisory: { ghsa_id: "GHSA-bbb", severity: "medium" },
+        security_vulnerability: {
+          vulnerable_version_range: "< 4.7.0",
+          first_patched_version: { identifier: "4.7.0" },
+        },
+      },
+      {
+        dependency: { package: { name: "hono", ecosystem: "npm" }, manifest_path: "package.json" },
+        security_advisory: { ghsa_id: "GHSA-ccc", severity: "high" },
+        security_vulnerability: {
+          vulnerable_version_range: "< 4.8.1",
+          first_patched_version: { identifier: "4.8.1" },
+        },
+      },
+    ]);
     expect(groups).toHaveLength(1);
     expect(groups[0]!.package).toBe("hono");
     expect(groups[0]!.advisories).toHaveLength(3);
     expect(groups[0]!.forcedVersion).toBe("4.8.1");
     expect(highestPatchedVersion(groups[0]!.advisories)).toBe("4.8.1");
   });
+});
 
-  it("labels a Dependabot development-scoped alert", () => {
-    const groups = groupAlerts([
-      {
-        dependency: {
-          package: { name: "picomatch", ecosystem: "npm" },
-          manifest_path: "package.json",
-          scope: "development",
-        },
-        security_advisory: { ghsa_id: "GHSA-dev", severity: "high" },
-        security_vulnerability: { vulnerable_version_range: "< 4.0.1", first_patched_version: { identifier: "4.0.1" } },
-      },
+describe("override scope", () => {
+  it("pins each immediate parent instead of one global override", () => {
+    expect(
+      overrideScopes({
+        package: "qs",
+        versions: ["6.5.0"],
+        inTree: true,
+        roots: [{ name: "express", version: "4.18.2" }],
+        chains: [
+          { path: ["express@4.18.2", "qs@6.5.0"], package: "qs", version: "6.5.0" },
+          {
+            path: ["express@4.18.2", "body-parser@1.20.1", "qs@6.5.0"],
+            package: "qs",
+            version: "6.5.0",
+          },
+        ],
+        dependerRanges: [],
+      }),
+    ).toEqual([
+      { type: "scoped", parent: "body-parser" },
+      { type: "scoped", parent: "express" },
     ]);
-    expect(groups[0]!.dependencyKind).toBe("development");
   });
 
-  it("reads Dependabot scopes from alerts/mixed.json", () => {
-    const alerts = loadAlertFile(join(FIXTURES_ROOT, "alerts/mixed.json"));
-    const groups = groupAlerts(Array.isArray(alerts) ? alerts : [alerts]);
-    const byPkg = Object.fromEntries(groups.map((g) => [g.package, g]));
-    expect(byPkg.picomatch?.dependencyKind).toBe("development");
-    expect(byPkg.qs?.dependencyKind).toBe("production");
-    expect(byPkg.qs?.advisories).toHaveLength(2);
-    expect(byPkg.ws?.dependencyKind).toBe("production");
-  });
-
-  it("treats mixed runtime+development as production", () => {
-    const groups = groupAlerts([
-      {
-        dependency: {
-          package: { name: "qs", ecosystem: "npm" },
-          manifest_path: "package.json",
-          scope: "development",
-        },
-        security_advisory: { severity: "high" },
-        security_vulnerability: { vulnerable_version_range: "< 6.11.0" },
-      },
-      {
-        dependency: {
-          package: { name: "qs", ecosystem: "npm" },
-          manifest_path: "package.json",
-          scope: "runtime",
-        },
-        security_advisory: { severity: "high" },
-        security_vulnerability: { vulnerable_version_range: "< 6.11.0" },
-      },
-    ]);
-    expect(groups).toHaveLength(1);
-    expect(groups[0]!.dependencyKind).toBe("production");
+  it("keeps a global pin when the package is a direct dependency", () => {
+    expect(
+      overrideScopes({
+        package: "qs",
+        versions: ["6.5.0"],
+        inTree: true,
+        roots: [{ name: "qs", version: "6.5.0" }],
+        chains: [{ path: ["qs@6.5.0"], package: "qs", version: "6.5.0" }],
+        dependerRanges: [],
+      }),
+    ).toEqual([{ type: "global" }]);
   });
 });
 
 describe("upgrade targets", () => {
-  it("does not suggest the version already installed", () => {
-    expect(upgradeTargetTo("23.3.0", "23.3.0", "23.3.0")).toBeUndefined();
-    expect(upgradeTargetTo("23.3.0", "23.4.1", "23.4.1")).toBe("23.4.1");
-    expect(upgradeTargetTo("23.3.0", undefined, "24.0.0")).toBe("24.0.0");
-  });
-
   it("formats installed vs destination", () => {
     expect(formatUpgradeTarget({ name: "nx", from: "23.3.0", to: "23.4.1" })).toBe(
       "nx@23.3.0 → 23.4.1",
@@ -168,7 +184,7 @@ describe("upgrade targets", () => {
       },
     );
     expect(next.strategy).toBe("override");
-    expect(next.reason).toMatch(/already at latest/);
+    expect(next.reason).toMatch(/already the latest published version/);
   });
 
   it("fills to when a newer release is proven to close the advisory", async () => {
@@ -236,7 +252,7 @@ describe("upgrade targets", () => {
     );
     expect(next.strategy).toBe("override");
     expect(next.forcedVersion).toBe("1.4.2");
-    expect(next.reason).toMatch(/no proven version that closes smol-toml/);
+    expect(next.reason).toMatch(/no published version that closes smol-toml/);
   });
 
   it("waits instead of overriding when a development-tree upgrade cannot be proven", async () => {
@@ -256,7 +272,8 @@ describe("upgrade targets", () => {
       dependencyKind: "development",
     });
     expect(next.strategy).toBe("wait");
-    expect(next.reason).toMatch(/wait/);
+    expect(next.reason).toMatch(/no published version that closes smol-toml/);
+    expect(next.reason).toMatch(/development dependency, not critical/);
   });
 
   it("walks an intermediate hop before judging the vuln package", async () => {
@@ -277,21 +294,17 @@ describe("upgrade targets", () => {
         },
       },
     );
-    const next = await resolveUpgradeDecision(
-      nxUpgrade("23.2.0"),
-      lookupFromRegistry(registry),
-      {
-        vulnPackage: "smol-toml",
-        advisories: smolTomlAdvisories,
-        chains: [
-          {
-            path: ["nx@23.2.0", "@nx/js@23.2.0", "smol-toml@1.0.1"],
-            package: "smol-toml",
-            version: "1.0.1",
-          },
-        ],
-      },
-    );
+    const next = await resolveUpgradeDecision(nxUpgrade("23.2.0"), lookupFromRegistry(registry), {
+      vulnPackage: "smol-toml",
+      advisories: smolTomlAdvisories,
+      chains: [
+        {
+          path: ["nx@23.2.0", "@nx/js@23.2.0", "smol-toml@1.0.1"],
+          package: "smol-toml",
+          version: "1.0.1",
+        },
+      ],
+    });
     expect(next.strategy).toBe("upgrade");
     expect(next.upgradeTargets?.[0]?.to).toBe("23.3.0");
   });
@@ -316,6 +329,47 @@ describe("upgrade targets", () => {
     );
     expect(next.strategy).toBe("upgrade");
     expect(next.upgradeTargets?.[0]).toMatchObject({ name: "qs", from: "6.5.0", to: "6.11.2" });
+  });
+
+  it("installs direct dependencies whose peer range rejects the new root", async () => {
+    const next = await resolveUpgradeDecision(
+      {
+        strategy: "upgrade",
+        reason: "few roots",
+        forcedVersion: "19.2.14",
+        scope: { type: "global" },
+        upgradeTargets: [{ name: "@angular/core", from: "19.2.0" }],
+      },
+      {
+        versionsNewerThan: async () => ["19.2.14"],
+        peerDependencies: async (pkg, version): Promise<Record<string, string> | undefined> => {
+          if (pkg === "@angular/core") return {};
+          if (pkg === "@angular/common" && version === "19.2.0") {
+            return { "@angular/core": "19.2.0" };
+          }
+          if (pkg === "@angular/common" && version === "19.2.14") {
+            return { "@angular/core": "19.2.14" };
+          }
+          if (pkg === "@angular/forms") return { "@angular/core": "^19.0.0" };
+          return undefined;
+        },
+      },
+      {
+        vulnPackage: "@angular/core",
+        advisories: [{ severity: "high", vulnerableRange: "< 19.2.14", patchedVersion: "19.2.14" }],
+        chains: [{ path: ["@angular/core@19.2.0"], package: "@angular/core", version: "19.2.0" }],
+        directs: [
+          { name: "@angular/core", version: "19.2.0" },
+          { name: "@angular/common", version: "19.2.0" },
+          { name: "@angular/forms", version: "19.2.0" },
+        ],
+      },
+    );
+    expect(next.upgradeTargets?.map((target) => target.name)).toEqual([
+      "@angular/core",
+      "@angular/common",
+    ]);
+    expect(next.upgradeTargets?.[1]).toMatchObject({ from: "19.2.0", to: "19.2.14" });
   });
 });
 
@@ -351,17 +405,64 @@ function nxUpgrade(from: string): Decision {
   };
 }
 
+describe("rangeRejectionNote", () => {
+  const dependers = [
+    { parent: "body-parser", range: "6.5.0", version: "1.20.1" },
+    { parent: "express", range: "6.5.0", version: "4.18.2" },
+  ];
+
+  it("names the parents a safe version falls outside of and points at the root", () => {
+    expect(
+      rangeRejectionNote({
+        pkg: "qs",
+        version: "6.11.2",
+        dependers,
+        strategy: "upgrade",
+        upgradeTargets: [{ name: "express", from: "4.18.2", to: "4.18.3" }],
+      }),
+    ).toBe(
+      "body-parser@1.20.1 and express@4.18.2 ask for qs@6.5.0. That does not include 6.11.2. Upgrade the root first. express@4.18.2 → 4.18.3 moves that range.",
+    );
+  });
+
+  it("says nothing when every parent range accepts the version", () => {
+    expect(
+      rangeRejectionNote({
+        pkg: "qs",
+        version: "6.5.0",
+        dependers,
+        strategy: "upgrade",
+        upgradeTargets: [{ name: "express", from: "4.18.2", to: "4.18.3" }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("warns that a pin can break the parent that still asks for the old range", () => {
+    expect(
+      rangeRejectionNote({
+        pkg: "qs",
+        version: "6.11.2",
+        dependers: [{ parent: "body-parser", range: "~6.5.0", version: "1.20.1" }],
+        strategy: "override",
+      }),
+    ).toBe(
+      "body-parser@1.20.1 asks for qs@~6.5.0. That does not include 6.11.2. The pin forces qs@6.11.2. That parent can fail to build.",
+    );
+  });
+});
+
 describe("stillVulnerable", () => {
   it("flags uuid@10 against < 11.1.1", () => {
     expect(
-      stillVulnerable("10.0.0", [{ severity: "high", vulnerableRange: "< 11.1.1", patchedVersion: "11.1.1" }]),
+      stillVulnerable("10.0.0", [
+        { severity: "high", vulnerableRange: "< 11.1.1", patchedVersion: "11.1.1" },
+      ]),
     ).toBe(true);
   });
 
   it("accepts 11.1.1", () => {
-    expect(
-      stillVulnerable("11.1.1", [{ severity: "high", vulnerableRange: "< 11.1.1" }]),
-    ).toBe(false);
+    expect(stillVulnerable("11.1.1", [{ severity: "high", vulnerableRange: "< 11.1.1" }])).toBe(
+      false,
+    );
   });
 });
-

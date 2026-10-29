@@ -1,0 +1,14 @@
+{
+  "name": "npm-migrations",
+  "private": true,
+  "description": "Grouped upgrades: Angular via ng update, nx via nx migrate, Storybook via storybook upgrade.",
+  "dependencies": {
+    "@angular/common": "19.2.0",
+    "@angular/core": "19.2.0",
+    "@angular/forms": "19.2.0",
+    "@storybook/addon-essentials": "8.4.0",
+    "@storybook/react": "8.4.0",
+    "nx": "23.2.0",
+    "storybook": "8.4.0"
+  }
+}

@@ -1,11 +1,7 @@
 {
   "upgradeRootThreshold": 3,
   "autoApplyRootUpgrade": false,
-  "defaultReviewDays": 7,
-  "metadataPath": "security-metadata.json",
   "htmlTemplate": "compact",
-  "dateLocale": "de",
-  "timeZone": "Europe/Berlin",
   "audit": {
     "minSeverity": "high"
   }

@@ -1,4 +1,4 @@
-import type { DependencyChain, DependencyKind, GraphAnalysis, RootPackage } from "../types.js";
+import type { DependencyChain, Depender, GraphAnalysis, RootPackage } from "../types.js";
 import { inferDependencyKind } from "./kind.js";
 
 export type FlatNode = {
@@ -17,7 +17,16 @@ export type DirectDep = {
 };
 
 export function emptyGraph(pkgName: string): GraphAnalysis {
-  return { package: pkgName, versions: [], inTree: false, roots: [], chains: [], dependerRanges: [] };
+  return {
+    package: pkgName,
+    versions: [],
+    inTree: false,
+    roots: [],
+    chains: [],
+    dependerRanges: [],
+    dependers: [],
+    directs: [],
+  };
 }
 
 export function analyzeFlatGraph(
@@ -30,6 +39,16 @@ export function analyzeFlatGraph(
   const rootMap = new Map<string, RootPackage>();
   const versions = new Set<string>();
   const dependerRanges = new Set<string>();
+  const dependers: Depender[] = [];
+  const dependerKeys = new Set<string>();
+  const addDepender = (parent: string, range: string, version?: string) => {
+    if (!range || parent === pkgName) return;
+    const key = `${parent}\0${range}\0${version ?? ""}`;
+    if (dependerKeys.has(key)) return;
+    dependerKeys.add(key);
+    dependers.push({ parent, range, version });
+    dependerRanges.add(range);
+  };
   const copies: Array<{ dev?: boolean; optional?: boolean }> = [];
   const chainKeys = new Set<string>();
 
@@ -54,9 +73,9 @@ export function analyzeFlatGraph(
       const parent = path.length >= 2 ? path[path.length - 2] : undefined;
       if (parent) {
         const edge = parent.deps.find((d) => d.name === pkgName);
-        if (edge?.spec) dependerRanges.add(edge.spec);
+        if (edge?.spec) addDepender(parent.name, edge.spec, parent.version);
       } else if (origin.name === pkgName) {
-        dependerRanges.add(origin.range);
+        addDepender("the project", origin.range);
       }
       return;
     }
@@ -85,6 +104,8 @@ export function analyzeFlatGraph(
     roots,
     chains,
     dependerRanges: [...dependerRanges],
+    dependers: dependers.sort((a, b) => a.parent.localeCompare(b.parent)),
+    directs: directs.map((dep) => ({ name: dep.name, version: dep.version })),
     dependencyKind: inTree
       ? inferDependencyKind({
           pkgName,

@@ -56,10 +56,10 @@ export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
     if (!parsed) continue;
     const snap = snapshots[key] ?? packages[key] ?? {};
     const deps = {
-      ...(packages[key]?.dependencies ?? {}),
-      ...(snap.dependencies ?? {}),
-      ...(packages[key]?.optionalDependencies ?? {}),
-      ...(snap.optionalDependencies ?? {}),
+      ...packages[key]?.dependencies,
+      ...snap.dependencies,
+      ...packages[key]?.optionalDependencies,
+      ...snap.optionalDependencies,
     };
     const node: FlatNode = {
       id: key,
@@ -94,9 +94,11 @@ function pushImporterBag(
 ): void {
   if (!bag) return;
   for (const [name, raw] of Object.entries(bag)) {
-    const specifier = typeof raw === "string" ? raw : raw.specifier ?? "";
-    const versionField = typeof raw === "string" ? raw : raw.version ?? "";
-    const node = resolvePnpmDep(nodes, undefined, name, versionField) ?? resolvePnpmDep(nodes, undefined, name, specifier);
+    const specifier = typeof raw === "string" ? raw : (raw.specifier ?? "");
+    const versionField = typeof raw === "string" ? raw : (raw.version ?? "");
+    const node =
+      resolvePnpmDep(nodes, undefined, name, versionField) ??
+      resolvePnpmDep(nodes, undefined, name, specifier);
     if (!node) continue;
     directs.push({
       name,
@@ -144,7 +146,9 @@ function resolvePnpmDep(
   for (const key of candidates) {
     if (key && nodes.has(key)) return nodes.get(key);
   }
-  const parsed = parsePnpmKey(trimmed.includes("@") || trimmed.startsWith("/") ? trimmed : `${depName}@${trimmed}`);
+  const parsed = parsePnpmKey(
+    trimmed.includes("@") || trimmed.startsWith("/") ? trimmed : `${depName}@${trimmed}`,
+  );
   if (parsed) {
     const hit = nodes.get(`${parsed.name}@${parsed.version}`);
     if (hit) return hit;

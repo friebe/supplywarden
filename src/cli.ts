@@ -2,12 +2,10 @@
 import { Command } from "commander";
 import { resolve } from "node:path";
 import { execFile } from "node:child_process";
-import { runAnalyze, runFix } from "./commands/fix.js";
+import { runFix } from "./commands/fix.js";
 import { runCheck } from "./commands/check.js";
 import { runDoctor } from "./commands/doctor.js";
-import { runInit } from "./commands/init.js";
 import { runReport } from "./commands/report.js";
-import { runSync } from "./commands/sync.js";
 import { runWhy } from "./commands/why.js";
 import { runVerify } from "./commands/verify.js";
 import { toMarkdown } from "./report/model.js";
@@ -24,7 +22,9 @@ const program = new Command();
 
 program
   .name("supplywarden")
-  .description("Supply-chain governance for npm projects — triage, audited overrides, and compliance checks")
+  .description(
+    "Show transitive npm audit findings with the root that pulls them in and the next command",
+  )
   .version("0.1.0");
 
 withGlobals(program);
@@ -71,15 +71,11 @@ function emit(result: CommandResult, cmd: Command): never {
   if (htmlPath) {
     writeHtml(result.report, htmlPath);
     console.error(`HTML report: ${htmlPath}`);
-    if (global.open && process.env.SUPPLYWARDEN_TEST !== "1" && process.env.VULNFIX_TEST !== "1") {
+    if (global.open && process.env.SUPPLYWARDEN_TEST !== "1") {
       openReport(htmlPath);
     }
   }
   process.exit(result.exitCode);
-}
-
-function auditEnabled(opts: { skipAudit?: boolean }): boolean {
-  return !opts.skipAudit;
 }
 
 /** pnpm run try -- --cwd … forwards a literal "--" as first argv token. */
@@ -88,56 +84,34 @@ function argvForCommander(argv: string[]): string[] {
   return argv;
 }
 
-withGlobals(program.command("doctor").description("Check npm version, lockfile, metadata")).action(
+withGlobals(program.command("doctor").description("Check the package manager and lockfile")).action(
   (_opts, cmd: Command) => {
     emit(runDoctor({ cwd: cwdOf(cmd) }), cmd);
   },
 );
 
 withGlobals(
-  program.command("init").description("Import existing overrides into security-metadata.json"),
-).action((_opts, cmd: Command) => {
-  emit(runInit({ cwd: cwdOf(cmd) }), cmd);
-});
-
-withGlobals(
-  program
-    .command("analyze")
-    .argument("[alert.json]", "Dependabot alert JSON; omit to run npm/pnpm/yarn audit")
-    .option("--skip-audit", "do not run package-manager audit")
-    .description("Analyze Dependabot alert(s) or live audit without writing"),
-).action(async (alertPath: string | undefined, opts: { skipAudit?: boolean }, cmd: Command) => {
-  emit(
-    await runAnalyze({
-      cwd: cwdOf(cmd),
-      alertPath: alertPath ? resolve(alertPath) : undefined,
-      enableAudit: auditEnabled(opts),
-    }),
-    cmd,
-  );
-});
-
-withGlobals(
   program
     .command("fix")
-    .argument("[alert.json]", "Dependabot alert JSON; omit to run npm/pnpm/yarn audit")
-    .option("--apply", "write metadata + package.json, or run a root upgrade via the package manager")
-    .option("--skip-audit", "do not run package-manager audit")
+    .argument("[package]", "only this package; omit to plan every open finding")
+    .option(
+      "--apply",
+      "write package.json overrides, or run a root upgrade via the package manager",
+    )
     .option("--skip-install", "do not run npm/pnpm/yarn install")
-    .description("Plan (and optionally apply) a fix from an alert file or live audit"),
+    .description("Plan a fix from live audit; --apply writes the pin"),
 ).action(
   async (
-    alertPath: string | undefined,
-    opts: { apply?: boolean; skipAudit?: boolean; skipInstall?: boolean },
+    pkg: string | undefined,
+    opts: { apply?: boolean; skipInstall?: boolean },
     cmd: Command,
   ) => {
     emit(
       await runFix({
         cwd: cwdOf(cmd),
-        alertPath: alertPath ? resolve(alertPath) : undefined,
+        package: pkg,
         apply: opts.apply,
         skipInstall: Boolean(opts.skipInstall),
-        enableAudit: auditEnabled(opts),
       }),
       cmd,
     );
@@ -147,37 +121,31 @@ withGlobals(
 withGlobals(
   program
     .command("check")
-    .argument("[alert.json]", "Dependabot JSON for NEW findings; omit to run npm/pnpm/yarn audit")
-    .option("--strict", "exit 1 on overdue high/critical, drift, verify_failed, or new audit findings")
-    .option("--skip-audit", "skip package-manager audit")
-    .description("Audit, triage new findings, and classify existing overrides"),
-).action(
-  async (
-    alertPath: string | undefined,
-    opts: { strict?: boolean; skipAudit?: boolean },
-    cmd: Command,
-  ) => {
-    emit(
-      await runCheck({
-        cwd: cwdOf(cmd),
-        strict: opts.strict,
-        enableAudit: alertPath ? false : auditEnabled(opts),
-        alertPath: alertPath ? resolve(alertPath) : undefined,
-      }),
-      cmd,
-    );
-  },
-);
+    .option("--strict", "exit 1 when a finding still needs an upgrade or a pin")
+    .description("Audit and print one next command per transitive finding"),
+).action(async (opts: { strict?: boolean }, cmd: Command) => {
+  emit(
+    await runCheck({
+      cwd: cwdOf(cmd),
+      strict: opts.strict,
+    }),
+    cmd,
+  );
+});
 
 withGlobals(
   program
     .command("verify")
-    .argument("[package]", "probe only this override; omit to probe all REMOVABLE leftovers")
-    .option("--apply", "drop overrides that verify confirmed as removable")
+    .argument("[package]", "probe this override; omit to probe overrides the audit does not list")
+    .option("--apply", "remove overrides the audit no longer needs")
     .option("--skip-install", "probe without running npm/pnpm install")
-    .description("Drop one override (or all REMOVABLE), install + audit, then restore or --apply"),
+    .description("Drop an override, install, audit, then restore or keep the drop"),
 ).action(
-  async (pkg: string | undefined, opts: { apply?: boolean; skipInstall?: boolean }, cmd: Command) => {
+  async (
+    pkg: string | undefined,
+    opts: { apply?: boolean; skipInstall?: boolean },
+    cmd: Command,
+  ) => {
     emit(
       await runVerify({
         cwd: cwdOf(cmd),
@@ -190,25 +158,21 @@ withGlobals(
   },
 );
 
-withGlobals(program.command("sync").description("Rewrite package.json overrides from metadata")).action(
-  (_opts, cmd: Command) => {
-    emit(runSync({ cwd: cwdOf(cmd) }), cmd);
-  },
-);
-
 withGlobals(
   program.command("why").argument("<package>").description("Show who pulls in a package"),
 ).action((pkg: string, _opts, cmd: Command) => {
   emit(runWhy({ cwd: cwdOf(cmd), package: pkg }), cmd);
 });
 
-withGlobals(program.command("report").description("HTML/markdown dashboard from metadata")).action(async (_opts, cmd: Command) => {
-  const result = await runReport({ cwd: cwdOf(cmd) });
-  if (globalsOf(cmd).html === undefined) {
-    const path = writeHtml(result.report, resolve(cwdOf(cmd), "supplywarden-report.html"));
-    console.error(`HTML report: ${path}`);
-  }
-  emit(result, cmd);
-});
+withGlobals(program.command("report").description("Same picture as check, written as HTML")).action(
+  async (_opts, cmd: Command) => {
+    const result = await runReport({ cwd: cwdOf(cmd) });
+    if (globalsOf(cmd).html === undefined) {
+      const path = writeHtml(result.report, resolve(cwdOf(cmd), "supplywarden-report.html"));
+      console.error(`HTML report: ${path}`);
+    }
+    emit(result, cmd);
+  },
+);
 
-program.parseAsync(argvForCommander(process.argv));
+void program.parseAsync(argvForCommander(process.argv));

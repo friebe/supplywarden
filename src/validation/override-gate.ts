@@ -1,10 +1,8 @@
 import { specFloorSafe, versionSatisfiesSpec } from "../util/semver-spec.js";
-import { stillVulnerable } from "../decision/engine.js";
 import type {
   Advisory,
   AuditClient,
   GraphAnalysis,
-  MetadataEntry,
   OverrideScope,
   RegistryClient,
   ValidationIssue,
@@ -16,7 +14,7 @@ export async function runPreApplyGate(opts: {
   graph: GraphAnalysis;
   advisories: Advisory[];
   scope: OverrideScope;
-  existing: MetadataEntry[];
+  existing: Array<{ package: string; forcedVersion: string }>;
   registry?: RegistryClient;
   audit?: AuditClient;
 }): Promise<ValidationIssue[]> {
@@ -50,27 +48,30 @@ export async function runPreApplyGate(opts: {
     });
   }
 
-  if (opts.scope.type === "scoped") {
-    const parentInTree = opts.graph.chains.some((c) =>
-      c.path.some((seg) => seg.startsWith(`${opts.scope.parent}@`) || seg === opts.scope.parent),
-    ) || opts.graph.roots.some((r) => r.name === opts.scope.parent);
+  const scope = opts.scope;
+  if (scope.type === "scoped") {
+    const parent = scope.parent;
+    const parentInTree =
+      opts.graph.chains.some((c) =>
+        c.path.some((seg) => seg.startsWith(`${parent}@`) || seg === parent),
+      ) || opts.graph.roots.some((r) => r.name === parent);
     if (!parentInTree && opts.graph.inTree) {
       issues.push({
         code: "INVALID_SCOPE",
-        message: `Scoped parent ${opts.scope.parent} is not on a chain to ${opts.pkg}`,
+        message: `Scoped parent ${parent} is not on a chain to ${opts.pkg}`,
         blocking: true,
       });
     }
   }
 
   const conflicting = opts.existing.filter(
-    (e) => e.package === opts.pkg && e.forcedVersion !== opts.forcedVersion && e.status === "active",
+    (e) => e.package === opts.pkg && e.forcedVersion !== opts.forcedVersion,
   );
   if (conflicting.length) {
     issues.push({
       code: "CONFLICTING_OVERRIDES",
       message: `Active override ${opts.pkg}@${conflicting[0]!.forcedVersion} conflicts with ${opts.forcedVersion}`,
-      hint: "Existing entry will be superseded",
+      hint: "package.json already pins a different version",
       blocking: false,
     });
   }

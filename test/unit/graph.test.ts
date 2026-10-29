@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { inferDependencyKind, dependencyKindLabel, mergeDependencyKind, analyzeNpmGraph } from "../../src/graph/npm.js";
+import { describe, expect, it } from "vite-plus/test";
+import {
+  inferDependencyKind,
+  dependencyKindLabel,
+  mergeDependencyKind,
+  analyzeNpmGraph,
+} from "../../src/graph/npm.js";
 import { parsePnpmKey } from "../../src/graph/pnpm.js";
 import { parseYarnDescriptor } from "../../src/graph/yarn.js";
 import { fixtureDir, FIXTURES_ROOT } from "../helpers/fixture-project.js";
@@ -61,6 +66,10 @@ describe("analyzeNpmGraph lockfile dispatch", () => {
     expect(graph.versions).toContain("6.5.0");
     expect(graph.roots.map((r) => r.name)).toContain("express");
     expect(graph.chains.some((c) => c.path.join(" → ").includes("express@4.18.2"))).toBe(true);
+    expect(graph.dependers).toEqual([
+      { parent: "body-parser", range: "6.5.0", version: "1.20.1" },
+      { parent: "express", range: "6.5.0", version: "4.18.2" },
+    ]);
   });
 
   it("reads express → qs from pnpm-lock.yaml", () => {
@@ -69,6 +78,10 @@ describe("analyzeNpmGraph lockfile dispatch", () => {
     expect(graph.versions).toEqual(["6.5.0"]);
     expect(graph.roots).toEqual([{ name: "express", version: "4.18.2", range: "^4.18.2" }]);
     expect(graph.dependencyKind).toBe("production");
+    expect(graph.dependers).toEqual([
+      { parent: "body-parser", range: "6.5.0", version: "1.20.1" },
+      { parent: "express", range: "6.5.0", version: "4.18.2" },
+    ]);
     expect(graph.chains.map((c) => c.path)).toEqual(
       expect.arrayContaining([
         ["express@4.18.2", "qs@6.5.0"],
@@ -107,7 +120,13 @@ describe("lockfile key parsing", () => {
 
   it("parses yarn descriptors", () => {
     expect(parseYarnDescriptor("express@^4.18.2")).toEqual({ name: "express", range: "^4.18.2" });
-    expect(parseYarnDescriptor("express@npm:^4.18.2")).toEqual({ name: "express", range: "^4.18.2" });
-    expect(parseYarnDescriptor("@scope/pkg@npm:1.0.0")).toEqual({ name: "@scope/pkg", range: "1.0.0" });
+    expect(parseYarnDescriptor("express@npm:^4.18.2")).toEqual({
+      name: "express",
+      range: "^4.18.2",
+    });
+    expect(parseYarnDescriptor("@scope/pkg@npm:1.0.0")).toEqual({
+      name: "@scope/pkg",
+      range: "1.0.0",
+    });
   });
 });

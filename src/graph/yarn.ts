@@ -31,7 +31,12 @@ export function analyzeYarnGraph(cwd: string, pkgName: string): GraphAnalysis {
   );
 }
 
-function indexNode(nodes: Map<string, FlatNode>, byName: Map<string, FlatNode[]>, node: FlatNode, aliases: string[]): void {
+function indexNode(
+  nodes: Map<string, FlatNode>,
+  byName: Map<string, FlatNode[]>,
+  node: FlatNode,
+  aliases: string[],
+): void {
   nodes.set(node.id, node);
   for (const alias of aliases) nodes.set(alias, node);
   const list = byName.get(node.name) ?? [];
@@ -39,7 +44,11 @@ function indexNode(nodes: Map<string, FlatNode>, byName: Map<string, FlatNode[]>
   byName.set(node.name, list);
 }
 
-function loadYarnClassic(text: string, nodes: Map<string, FlatNode>, byName: Map<string, FlatNode[]>): void {
+function loadYarnClassic(
+  text: string,
+  nodes: Map<string, FlatNode>,
+  byName: Map<string, FlatNode[]>,
+): void {
   const blocks = splitYarnClassicBlocks(text);
   for (const block of blocks) {
     const header = block[0];
@@ -78,7 +87,10 @@ function loadYarnClassic(text: string, nodes: Map<string, FlatNode>, byName: Map
       version,
       deps: Object.entries(deps).map(([depName, spec]) => ({ name: depName, spec })),
     };
-    indexNode(nodes, byName, node, [`${name}@${version}`, ...descriptors.map((d) => `${name}@${parseYarnDescriptor(d).range}`)]);
+    indexNode(nodes, byName, node, [
+      `${name}@${version}`,
+      ...descriptors.map((d) => `${name}@${parseYarnDescriptor(d).range}`),
+    ]);
   }
 }
 
@@ -113,7 +125,11 @@ function parseYarnClassicDep(line: string): { name: string; spec: string } | und
   return undefined;
 }
 
-function loadYarnBerry(text: string, nodes: Map<string, FlatNode>, byName: Map<string, FlatNode[]>): void {
+function loadYarnBerry(
+  text: string,
+  nodes: Map<string, FlatNode>,
+  byName: Map<string, FlatNode[]>,
+): void {
   let parsed: unknown;
   try {
     parsed = parseYaml(text);
@@ -123,11 +139,15 @@ function loadYarnBerry(text: string, nodes: Map<string, FlatNode>, byName: Map<s
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (key === "__metadata" || !value || typeof value !== "object") continue;
-    const meta = value as { version?: string; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
+    const meta = value as {
+      version?: string;
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
     if (!meta.version) continue;
     const descriptors = key.split(/,\s*/).map((d) => d.replace(/^"|"$/g, ""));
     const name = parseYarnDescriptor(descriptors[0] ?? key).name;
-    const deps = { ...(meta.dependencies ?? {}), ...(meta.optionalDependencies ?? {}) };
+    const deps = { ...meta.dependencies, ...meta.optionalDependencies };
     const node: FlatNode = {
       id: `${name}@${meta.version}`,
       name,

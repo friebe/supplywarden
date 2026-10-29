@@ -1,7 +1,13 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectPackageManager } from "../graph/npm.js";
-import type { MetadataEntry, OverrideScope, PackageManager, SecurityMetadata } from "../types.js";
+import type { OverrideScope, PackageManager } from "../types.js";
+
+export type OverridePin = {
+  package: string;
+  version: string;
+  scope: OverrideScope;
+};
 
 type PackageJson = {
   overrides?: Record<string, unknown>;
@@ -84,28 +90,21 @@ export function extractExistingOverrides(pkg: PackageJson) {
   });
 }
 
-function overrideValue(entry: MetadataEntry): unknown {
-  if (entry.scope.type === "scoped") {
-    return { [entry.scope.parent]: { [entry.package]: entry.forcedVersion } };
-  }
-  return entry.forcedVersion;
-}
-
-export function buildOverridesObject(entries: MetadataEntry[]): Record<string, unknown> {
+export function buildOverridesObject(entries: OverridePin[]): Record<string, unknown> {
   const result: Record<string, unknown> = {};
-  for (const entry of entries.filter((e) => e.status === "active" || e.status === "pending_verify")) {
+  for (const entry of entries) {
     if (entry.scope.type === "scoped") {
       const parent = entry.scope.parent;
       const existing = result[parent];
       if (existing && typeof existing === "object") {
-        (existing as Record<string, string>)[entry.package] = entry.forcedVersion;
+        (existing as Record<string, string>)[entry.package] = entry.version;
       } else if (typeof existing === "undefined") {
-        result[parent] = { [entry.package]: entry.forcedVersion };
+        result[parent] = { [entry.package]: entry.version };
       } else {
-        result[entry.package] = entry.forcedVersion;
+        result[entry.package] = entry.version;
       }
     } else {
-      result[entry.package] = entry.forcedVersion;
+      result[entry.package] = entry.version;
     }
   }
   return result;
@@ -142,7 +141,7 @@ function writeOverrideSyntax(
   if (pm === "pnpm") {
     delete pkg.overrides;
     if (empty) clearPnpmOverrides(pkg);
-    else pkg.pnpm = { ...(pkg.pnpm ?? {}), overrides };
+    else pkg.pnpm = { ...pkg.pnpm, overrides };
     if (pkg.resolutions && Object.keys(pkg.resolutions).length === 0) delete pkg.resolutions;
     return;
   }
@@ -158,17 +157,35 @@ function writeOverrideSyntax(
   else pkg.overrides = overrides;
 }
 
-export function syncOverridesToPackageJson(
+export function writeOverrides(
   cwd: string,
-  metadata: SecurityMetadata,
+  entries: OverridePin[],
   manifestPath = "package.json",
 ): { path: string; overrides: Record<string, unknown> } {
   const pkg = readPackageJson(cwd, manifestPath);
-  const overrides = buildOverridesObject(metadata.entries);
+  const overrides = buildOverridesObject(entries);
   const pm = detectPackageManager(cwd);
   writeOverrideSyntax(pkg, pm, overrides);
   const path = writePackageJson(cwd, pkg, manifestPath);
   return { path, overrides };
+}
+
+export function upsertOverride(
+  cwd: string,
+  pin: OverridePin,
+  manifestPath = "package.json",
+): { path: string; overrides: Record<string, unknown> } {
+  const pkg = readPackageJson(cwd, manifestPath);
+  const parent = pin.scope.type === "scoped" ? pin.scope.parent : "";
+  const kept = extractExistingOverrides(pkg).filter((item) => {
+    const itemParent = item.scope.type === "scoped" ? item.scope.parent : "";
+    return !(
+      item.package === pin.package &&
+      item.scope.type === pin.scope.type &&
+      itemParent === parent
+    );
+  });
+  return writeOverrides(cwd, [...kept, pin], manifestPath);
 }
 
 export function deleteOverrideFromManifest(
@@ -194,5 +211,3 @@ export function deleteOverrideFromManifest(
   if (pkg.resolutions && Object.keys(pkg.resolutions).length === 0) delete pkg.resolutions;
   writePackageJson(cwd, pkg, manifestPath);
 }
-
-export { overrideValue };

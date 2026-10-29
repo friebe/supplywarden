@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { specAtLeast, specFloorSafe, specMinVersion, versionSatisfiesSpec } from "../../src/util/semver-spec.js";
+import { describe, expect, it } from "vite-plus/test";
+import {
+  specAtLeast,
+  specFloorSafe,
+  specMinVersion,
+  versionSatisfiesSpec,
+} from "../../src/util/semver-spec.js";
 
-const qsHigh = [{ severity: "high" as const, vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" }];
+const qsHigh = [
+  { severity: "high" as const, vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" },
+];
 
 describe("semver spec vs advisory floor", () => {
   it("reads the floor of a caret range", () => {
