@@ -1,6 +1,7 @@
 {
   "upgradeRootThreshold": 3,
   "autoApplyRootUpgrade": false,
+  "pinDevelopment": true,
   "htmlTemplate": "compact",
   "audit": {
     "minSeverity": "high"

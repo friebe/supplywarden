@@ -114,6 +114,7 @@ async function findingFromAudit(
       chains: graph.chains,
       dependencyKind: graph.dependencyKind,
       directs: graph.directs,
+      pinDevelopment: config.pinDevelopment,
     },
   );
   return toFinding(cwd, group, graph, decision);

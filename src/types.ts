@@ -38,6 +38,8 @@ export type SupplywardenConfig = {
   upgradeRootThreshold: number;
   /** When true, `fix --apply` runs the suggested root upgrade (`npm install` / `pnpm add` / `nx migrate`). Default: suggest only. */
   autoApplyRootUpgrade: boolean;
+  /** When true, pin a development or optional dependency a root upgrade cannot close. Default: true. */
+  pinDevelopment: boolean;
   /** Built-in `default` / `compact`, or an HTML file relative to the project root. */
   htmlTemplate: string;
   audit: AuditConfig;

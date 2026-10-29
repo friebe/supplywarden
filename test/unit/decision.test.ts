@@ -20,7 +20,7 @@ describe("decision engine", () => {
     expect(recommend({ rootCount: 2, threshold: 3, canUpgradeRoots: true })).toBe("upgrade");
   });
 
-  it("recommends wait for a non-critical development tree over the threshold", () => {
+  it("pins a non-critical development tree over the threshold by default", () => {
     expect(
       recommend({
         rootCount: 5,
@@ -28,6 +28,19 @@ describe("decision engine", () => {
         canUpgradeRoots: true,
         kind: "development",
         severity: "high",
+      }),
+    ).toBe("override");
+  });
+
+  it("waits for a non-critical development tree when pinDevelopment is off", () => {
+    expect(
+      recommend({
+        rootCount: 5,
+        threshold: 3,
+        canUpgradeRoots: true,
+        kind: "development",
+        severity: "high",
+        pinDevelopment: false,
       }),
     ).toBe("wait");
   });
@@ -40,11 +53,12 @@ describe("decision engine", () => {
         canUpgradeRoots: true,
         kind: "development",
         severity: "critical",
+        pinDevelopment: false,
       }),
     ).toBe("override");
   });
 
-  it("decides wait on a high-severity development tree over the threshold", () => {
+  it("pins a high-severity development tree over the threshold by default", () => {
     const decision = decide({
       graph: {
         package: "picomatch",
@@ -62,6 +76,29 @@ describe("decision engine", () => {
       },
       advisories: [{ severity: "high", vulnerableRange: "< 4.0.4", patchedVersion: "4.0.4" }],
       config: DEFAULT_CONFIG,
+    });
+    expect(decision.strategy).toBe("override");
+    expect(decision.forcedVersion).toBe("4.0.4");
+  });
+
+  it("decides wait on a high-severity development tree when pinDevelopment is off", () => {
+    const decision = decide({
+      graph: {
+        package: "picomatch",
+        versions: ["4.0.2"],
+        inTree: true,
+        roots: [
+          { name: "eslint", version: "8.57.0" },
+          { name: "jest", version: "29.0.0" },
+          { name: "webpack", version: "5.0.0" },
+          { name: "ava", version: "5.0.0" },
+        ],
+        chains: [],
+        dependerRanges: [],
+        dependencyKind: "development",
+      },
+      advisories: [{ severity: "high", vulnerableRange: "< 4.0.4", patchedVersion: "4.0.4" }],
+      config: { ...DEFAULT_CONFIG, pinDevelopment: false },
     });
     expect(decision.strategy).toBe("wait");
     expect(decision.reason).toMatch(/more than the threshold of 3/);
@@ -270,10 +307,31 @@ describe("upgrade targets", () => {
     const next = await resolveUpgradeDecision(nxUpgrade("23.2.0"), lookupFromRegistry(registry), {
       ...smolTomlProof("23.2.0"),
       dependencyKind: "development",
+      pinDevelopment: false,
     });
     expect(next.strategy).toBe("wait");
     expect(next.reason).toMatch(/no published version that closes smol-toml/);
     expect(next.reason).toMatch(/development dependency, not critical/);
+  });
+
+  it("pins a development tree when no published root closes the advisory", async () => {
+    const registry = createOfflineRegistry(
+      {
+        nx: ["23.2.0", "23.2.1"],
+        "smol-toml": ["1.3.1", "1.4.2"],
+      },
+      {
+        nx: {
+          "23.2.1": { "smol-toml": "^1.3.1" },
+        },
+      },
+    );
+    const next = await resolveUpgradeDecision(nxUpgrade("23.2.0"), lookupFromRegistry(registry), {
+      ...smolTomlProof("23.2.0"),
+      dependencyKind: "development",
+    });
+    expect(next.strategy).toBe("override");
+    expect(next.reason).toMatch(/Pin smol-toml@1\.4\.2/);
   });
 
   it("walks an intermediate hop before judging the vuln package", async () => {

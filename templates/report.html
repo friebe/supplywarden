@@ -79,6 +79,8 @@
     }
     td { padding: 9px 12px; border-top: 1px solid var(--line); vertical-align: top; }
     .name { font-weight: 650; }
+    .name a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+    .name a:hover { text-decoration-color: var(--ink); }
     tr.mismatch { background: var(--amber-bg); }
     tr.mismatch .pin { color: var(--amber); font-weight: 650; }
     td code { display: block; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
@@ -138,6 +140,18 @@
       if (className) node.className = className;
       if (text != null) node.textContent = text;
       return node;
+    }
+    function nameCell(entry) {
+      const td = el("td", "name");
+      const a = document.createElement("a");
+      const installed = (entry.installed || []).filter(Boolean);
+      const version = installed.length === 1 ? "/v/" + installed[0] : "";
+      a.href = "https://npmx.dev/package/" + entry.package + version;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = entry.package;
+      td.append(a);
+      return td;
     }
 
     const groups = {
@@ -206,7 +220,7 @@
           if (command) done.append(el("code", "", command));
           const why = firstSentence(entry.summary);
           if (why) done.append(el("div", "sub", why));
-          tr.append(el("td", "name", entry.package), action, from, done);
+          tr.append(nameCell(entry), action, from, done);
           return tr;
         })));
         out.append(section);
@@ -219,7 +233,7 @@
           const done = el("td", "do");
           const command = (entry.commands || [])[0];
           if (command) done.append(el("code", "", command));
-          tr.append(el("td", "name", entry.package), el("td", "", firstSentence(entry.summary)), done);
+          tr.append(nameCell(entry), el("td", "", firstSentence(entry.summary)), done);
           return tr;
         })));
         out.append(section);
@@ -235,7 +249,7 @@
           const tr = document.createElement("tr");
           if (offPin(entry)) tr.className = "mismatch";
           tr.append(
-            el("td", "name", entry.package),
+            nameCell(entry),
             el("td", "", (entry.installed || []).join(", ") || "—"),
             el("td", "pin", entry.forcedVersion || "—"),
             el("td", "via", via(entry) || "—"),

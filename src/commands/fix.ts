@@ -96,6 +96,7 @@ export async function runFix(opts: {
         chains: graph.chains,
         dependencyKind: kind,
         directs: graph.directs,
+        pinDevelopment: config.pinDevelopment,
       },
     );
     const result = await applyFix({

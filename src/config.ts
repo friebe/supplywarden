@@ -6,6 +6,7 @@ export const CONFIG_FILENAME = ".supplywardenrc.json";
 export const DEFAULT_CONFIG: SupplywardenConfig = {
   upgradeRootThreshold: 3,
   autoApplyRootUpgrade: false,
+  pinDevelopment: true,
   htmlTemplate: "default",
   audit: {
     minSeverity: "high",
@@ -29,6 +30,7 @@ export function loadConfig(cwd: string): SupplywardenConfig {
     return {
       upgradeRootThreshold: raw.upgradeRootThreshold ?? DEFAULT_CONFIG.upgradeRootThreshold,
       autoApplyRootUpgrade: raw.autoApplyRootUpgrade === true,
+      pinDevelopment: raw.pinDevelopment !== false,
       htmlTemplate: raw.htmlTemplate?.trim() || DEFAULT_CONFIG.htmlTemplate,
       audit: {
         minSeverity: raw.audit?.minSeverity ?? DEFAULT_CONFIG.audit.minSeverity,

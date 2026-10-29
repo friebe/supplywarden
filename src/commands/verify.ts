@@ -132,6 +132,7 @@ export async function runVerify(opts: {
           chains: graph.chains,
           dependencyKind: graph.dependencyKind,
           directs: graph.directs,
+          pinDevelopment: config.pinDevelopment,
         },
       );
       const pm = resolvePackageManager(cwd);

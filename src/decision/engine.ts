@@ -30,6 +30,8 @@ export type UpgradeProofContext = {
   chains: DependencyChain[];
   dependencyKind?: DependencyKind;
   directs?: Array<{ name: string; version: string }>;
+  /** When false, a non-critical dev or optional tree waits instead of pinning. Default: pin. */
+  pinDevelopment?: boolean;
 };
 
 export function recommend(input: {
@@ -38,14 +40,20 @@ export function recommend(input: {
   canUpgradeRoots: boolean;
   kind?: DependencyKind;
   severity?: Severity;
+  pinDevelopment?: boolean;
 }): Strategy {
   if (input.canUpgradeRoots && input.rootCount <= input.threshold) return "upgrade";
-  if (shouldWait(input.kind, input.severity)) return "wait";
+  if (shouldWait(input.kind, input.severity, input.pinDevelopment !== false)) return "wait";
   return "override";
 }
 
-/** Dev/optional trees: don't pin or migrate unless the advisory is critical. */
-export function shouldWait(kind?: DependencyKind, severity?: Severity): boolean {
+/** Dev/optional trees wait only when `pinDevelopment` is off, and never for a critical advisory. */
+export function shouldWait(
+  kind?: DependencyKind,
+  severity?: Severity,
+  pinDevelopment = true,
+): boolean {
+  if (pinDevelopment) return false;
   if (severity === "critical") return false;
   return kind === "development" || kind === "optional";
 }
@@ -75,6 +83,7 @@ export function decide(opts: {
     canUpgradeRoots: canUpgrade,
     kind,
     severity,
+    pinDevelopment: opts.config.pinDevelopment,
   });
 
   const scopes = overrideScopes(opts.graph);
@@ -252,7 +261,7 @@ export async function resolveUpgradeDecision(
     const installed = targets.map((t) => `${t.name}@${t.from ?? "?"}`).join(", ");
     const kind = proof?.dependencyKind;
     const severity = proof ? maxAdvisorySeverity(proof.advisories) : undefined;
-    if (shouldWait(kind, severity)) {
+    if (shouldWait(kind, severity, proof?.pinDevelopment !== false)) {
       return {
         strategy: "wait",
         reason: `${installed} has no published version that closes ${proof?.vulnPackage ?? "the advisory"}. ${kind ?? "non-production"} dependency, not critical — no pin.`,
