@@ -6,6 +6,7 @@ import {
   analyzeNpmGraph,
 } from "../../src/graph/npm.js";
 import { parsePnpmKey } from "../../src/graph/pnpm.js";
+import { extraSnapshotFiles, findPnpmRoot } from "../../src/graph/workspace.js";
 import { parseYarnDescriptor } from "../../src/graph/yarn.js";
 import { fixtureDir, FIXTURES_ROOT } from "../helpers/fixture-project.js";
 import { join } from "node:path";
@@ -101,6 +102,39 @@ describe("analyzeNpmGraph lockfile dispatch", () => {
     const graph = analyzeNpmGraph(join(FIXTURES_ROOT, ".."), "commander");
     expect(graph.inTree).toBe(true);
     expect(graph.roots.some((r) => r.name === "commander")).toBe(true);
+  });
+
+  it("keeps the workspace importer and the catalog when the lockfile is above the member", () => {
+    const member = join(fixtureDir("pnpm-workspace"), "apps/web");
+    expect(findPnpmRoot(member)).toBe(fixtureDir("pnpm-workspace"));
+    expect(findPnpmRoot(fixtureDir("npm-simple"))).toBeUndefined();
+    expect(findPnpmRoot(fixtureDir("pnpm-simple"))).toBe(fixtureDir("pnpm-simple"));
+
+    const leftPad = analyzeNpmGraph(member, "left-pad");
+    expect(leftPad.roots).toEqual([
+      { name: "left-pad", version: "1.0.0", range: "1.0.0", importer: "web" },
+    ]);
+
+    const minimist = analyzeNpmGraph(member, "minimist");
+    expect(minimist.roots).toEqual([
+      {
+        name: "minimist",
+        version: "1.2.0",
+        range: "^1.2.0",
+        importer: "@repo/ui",
+        catalog: "default",
+      },
+    ]);
+
+    const ms = analyzeNpmGraph(member, "ms");
+    expect(ms.roots).toEqual([
+      { name: "ms", version: "2.0.0", range: "2.0.0", importer: "@repo/ui" },
+    ]);
+    expect(extraSnapshotFiles(fixtureDir("pnpm-workspace")).sort()).toEqual([
+      "apps/web/package.json",
+      "packages/ui/package.json",
+      "pnpm-workspace.yaml",
+    ]);
   });
 
   it("does not invent a tree when the package is missing from a pnpm lockfile", () => {

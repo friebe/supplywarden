@@ -101,7 +101,12 @@ export function decide(opts: {
       forcedVersion,
       scope,
       scopes,
-      upgradeTargets: opts.graph.roots.map((r) => ({ name: r.name, from: r.version })),
+      upgradeTargets: opts.graph.roots.map((r) => ({
+        name: r.name,
+        from: r.version,
+        ...(r.importer ? { filter: r.importer } : {}),
+        ...(r.catalog ? { catalog: r.catalog } : {}),
+      })),
     };
   }
 
@@ -513,7 +518,12 @@ async function withPeerCompanions(
       if (!rejectsTarget && !targetRejectsInstalled) continue;
       const to = await companionVersion(dep.name, target.to, requiredRange, lookup);
       if (!to || to === dep.version) continue;
-      additions.push({ name: dep.name, from: dep.version, to });
+      additions.push({
+        name: dep.name,
+        from: dep.version,
+        to,
+        ...(target.filter ? { filter: target.filter } : {}),
+      });
       have.add(dep.name);
     }
   }

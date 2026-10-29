@@ -1,12 +1,18 @@
 import type { PackageManager } from "../types.js";
 
-export type UpgradeTarget = { name: string; from?: string; to?: string };
+export type UpgradeTarget = {
+  name: string;
+  from?: string;
+  to?: string;
+  filter?: string;
+  catalog?: string;
+};
 
 export type RootUpgradeCommand = {
   file: string;
   args: string[];
   display: string;
-  kind: "nx" | "migrate" | "install";
+  kind: "nx" | "migrate" | "install" | "catalog";
 };
 
 type MigrateTool = {
@@ -77,8 +83,11 @@ export function rootUpgradeCommands(
   }
   const rest = targets.filter((target) => target.to && !claimed.has(target.name));
   const commands: RootUpgradeCommand[] = [];
-  const install = installCommand(pm, rest);
-  if (install) commands.push(install);
+  if (pm === "pnpm") commands.push(...pnpmInstallCommands(rest));
+  else {
+    const install = installCommand(pm, rest);
+    if (install) commands.push(install);
+  }
   commands.push(...grouped);
   return commands;
 }
@@ -124,4 +133,48 @@ function installCommand(
     display: `${pm} add ${specs.join(" ")}`,
     kind: "install",
   };
+}
+
+/** One `pnpm add` per `--filter`. A catalog row is a file edit, not `pnpm add`. */
+function pnpmInstallCommands(targets: UpgradeTarget[]): RootUpgradeCommand[] {
+  const commands: RootUpgradeCommand[] = [];
+  const byCatalog = new Map<string, UpgradeTarget[]>();
+  const byFilter = new Map<string, UpgradeTarget[]>();
+  for (const target of targets) {
+    if (target.catalog) {
+      const members = byCatalog.get(target.catalog) ?? [];
+      members.push(target);
+      byCatalog.set(target.catalog, members);
+      continue;
+    }
+    const key = target.filter ?? "";
+    const members = byFilter.get(key) ?? [];
+    members.push(target);
+    byFilter.set(key, members);
+  }
+  for (const [filter, members] of byFilter) {
+    const specs = members.map((member) => `${member.name}@${member.to}`);
+    const args = filter ? ["--filter", filter, "add", ...specs] : ["add", ...specs];
+    const display = filter
+      ? `pnpm --filter ${shellFilter(filter)} add ${specs.join(" ")}`
+      : `pnpm add ${specs.join(" ")}`;
+    commands.push({ file: "pnpm", args, display, kind: "install" });
+  }
+  for (const [name, members] of byCatalog) {
+    const specs = members.map((member) => `${member.name} to ${member.to}`).join(" and ");
+    const where =
+      name === "default" ? "pnpm-workspace.yaml" : `catalog ${name} in pnpm-workspace.yaml`;
+    commands.push({
+      file: "pnpm",
+      args: [],
+      display: `Set ${specs} in ${where}, then pnpm install`,
+      kind: "catalog",
+    });
+  }
+  return commands;
+}
+
+function shellFilter(filter: string): string {
+  if (/^[\w.-]+$/.test(filter)) return filter;
+  return `'${filter.replaceAll("'", "'\\''")}'`;
 }

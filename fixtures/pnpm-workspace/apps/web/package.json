@@ -1,0 +1,8 @@
+{
+  "name": "web",
+  "private": true,
+  "dependencies": {
+    "@repo/ui": "workspace:*",
+    "left-pad": "1.0.0"
+  }
+}

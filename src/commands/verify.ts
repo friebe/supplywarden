@@ -1,4 +1,5 @@
 import { analyzeNpmGraph, resolvePackageManager } from "../graph/npm.js";
+import { extraSnapshotFiles, resolveProjectDir } from "../graph/workspace.js";
 import {
   decide,
   formatUpgradeTargets,
@@ -31,7 +32,7 @@ export async function runVerify(opts: {
   install?: InstallClient;
   registry?: RegistryClient;
 }): Promise<CommandResult> {
-  const cwd = opts.cwd;
+  const cwd = resolveProjectDir(opts.cwd);
   const config = loadConfig(cwd);
   const pkg = opts.package;
   const audit = opts.audit ?? createLiveAudit();
@@ -76,7 +77,7 @@ export async function runVerify(opts: {
     };
   }
 
-  const snap = snapshotFiles(cwd, PROJECT_SNAPSHOT_FILES);
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, ...extraSnapshotFiles(cwd)]);
   const probed: Finding[] = [];
   const messages: string[] = [
     pkg

@@ -2,6 +2,7 @@ import { blockingIssues, runPreApplyGate } from "../validation/override-gate.js"
 import { runPostVerify } from "../validation/post-verify.js";
 import { extractExistingOverrides, readPackageJson, upsertOverride } from "../metadata/sync.js";
 import { nowIso } from "../util/time.js";
+import { extraSnapshotFiles } from "../graph/workspace.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { createLiveInstall } from "../install/client.js";
 import { quotedUpgradeCommands, rootUpgradeCommands } from "./upgrade-command.js";
@@ -112,7 +113,7 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     };
   }
 
-  const snap = snapshotFiles(cwd, PROJECT_SNAPSHOT_FILES);
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, ...extraSnapshotFiles(cwd)]);
   for (const scope of scopes) {
     upsertOverride(
       cwd,
@@ -217,6 +218,15 @@ async function applyRootUpgrade(
     return { exitCode: 1, report: { ...report, title: "No upgrade version" }, messages };
   }
 
+  if (commands.every((command) => command.kind === "catalog")) {
+    messages.push(`Catalog edit is a suggestion — ${quoted}`);
+    return {
+      exitCode: blocked.length ? 1 : 0,
+      report: { ...report, title: "Catalog edit suggested" },
+      messages,
+    };
+  }
+
   if (!opts.apply) {
     noteBreakingUpgradeSkip(messages, decision);
     messages.push(
@@ -260,8 +270,16 @@ async function applyRootUpgrade(
     return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
   }
 
-  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, group.manifestPath]);
+  const snap = snapshotFiles(cwd, [
+    ...PROJECT_SNAPSHOT_FILES,
+    ...extraSnapshotFiles(cwd),
+    group.manifestPath,
+  ]);
   for (const command of commands) {
+    if (command.kind === "catalog") {
+      messages.push(command.display);
+      continue;
+    }
     const installed = await install.runCommand(cwd, command.file, command.args);
     if (!installed.ok) {
       restoreFiles(cwd, snap);

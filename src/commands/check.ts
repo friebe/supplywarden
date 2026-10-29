@@ -13,6 +13,7 @@ import {
   vulnerableReach,
 } from "../decision/engine.js";
 import { analyzeNpmGraph, resolvePackageManager } from "../graph/npm.js";
+import { resolveProjectDir } from "../graph/workspace.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
 import { createLiveRegistry } from "../registry/verify.js";
 import { groupUpgradeNote, rootUpgradeCommands } from "../fix/upgrade-command.js";
@@ -39,7 +40,7 @@ export async function runCheck(opts: {
   audit?: AuditClient;
   registry?: RegistryClient;
 }): Promise<CommandResult> {
-  const cwd = opts.cwd;
+  const cwd = resolveProjectDir(opts.cwd);
   const config = loadConfig(cwd);
   const groups = await loadGroups(opts, cwd, config.audit.minSeverity);
   if ("error" in groups) {
@@ -164,9 +165,17 @@ function toFinding(
     const targets = withDirectPatch(group.package, forced, decision.upgradeTargets ?? []);
     let commands = rootUpgradeCommands(pm, targets).map((c) => c.display);
     if (!commands.length && forced) {
-      commands = rootUpgradeCommands(pm, [{ name: group.package, to: forced }]).map(
-        (command) => command.display,
-      );
+      const pending = decision.upgradeTargets ?? [];
+      const filters = [...new Set(pending.map((target) => target.filter).filter(Boolean))];
+      const catalogs = [...new Set(pending.map((target) => target.catalog).filter(Boolean))];
+      commands = rootUpgradeCommands(pm, [
+        {
+          name: group.package,
+          to: forced,
+          ...(filters.length === 1 ? { filter: filters[0] } : {}),
+          ...(catalogs.length === 1 ? { catalog: catalogs[0] } : {}),
+        },
+      ]).map((command) => command.display);
     }
     const bump = formatUpgradeTargets({ ...decision, upgradeTargets: targets });
     const noted = { ...decision, upgradeTargets: targets };

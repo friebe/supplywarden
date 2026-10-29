@@ -63,6 +63,52 @@ describe("check", () => {
   });
 });
 
+describe("pnpm workspace", () => {
+  it("adds through the member filter and leaves a catalog dependency in the workspace file", async () => {
+    const cwd = join(fixtureDir("pnpm-workspace"), "apps/web");
+    const result = await runCheck({
+      cwd,
+      audit: createStaticAudit([
+        {
+          package: "left-pad",
+          severity: "high",
+          range: "< 1.3.0",
+          ghsaId: "GHSA-left",
+          patchedVersion: "1.3.0",
+        },
+        {
+          package: "minimist",
+          severity: "high",
+          range: "< 1.2.8",
+          ghsaId: "GHSA-mini",
+          patchedVersion: "1.2.8",
+        },
+        {
+          package: "ms",
+          severity: "high",
+          range: "< 2.1.3",
+          ghsaId: "GHSA-ms",
+          patchedVersion: "2.1.3",
+        },
+      ]),
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+    });
+    expect(result.report.cwd).toBe(fixtureDir("pnpm-workspace"));
+    const left = result.report.entries.find((entry) => entry.package === "left-pad");
+    expect(left?.commands).toContain("pnpm --filter web add left-pad@1.3.0");
+    expect(left?.commands.some((command) => command === "pnpm add left-pad@1.3.0")).toBe(false);
+    const minimist = result.report.entries.find((entry) => entry.package === "minimist");
+    expect(minimist?.commands.join(" ")).toMatch(/pnpm-workspace\.yaml/);
+    expect(minimist?.commands.some((command) => command.includes("pnpm add"))).toBe(false);
+    const ms = result.report.entries.find((entry) => entry.package === "ms");
+    expect(ms?.commands).toContain("pnpm --filter '@repo/ui' add ms@2.1.3");
+  });
+});
+
 describe("why / fix", () => {
   it("names a low advisory and the patched version of a direct package", async () => {
     await withFixture("npm-mixed", async (cwd) => {

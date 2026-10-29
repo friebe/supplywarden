@@ -1,6 +1,7 @@
 import { loadConfig } from "../config.js";
 import { decide, lookupFromRegistry, resolveUpgradeDecision } from "../decision/engine.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
+import { resolveProjectDir } from "../graph/workspace.js";
 import { applyFix } from "../fix/apply.js";
 import { createLiveRegistry } from "../registry/verify.js";
 import { createLiveInstall } from "../install/client.js";
@@ -25,7 +26,7 @@ export async function runFix(opts: {
   audit?: AuditClient;
   install?: InstallClient;
 }): Promise<CommandResult> {
-  const cwd = opts.cwd;
+  const cwd = resolveProjectDir(opts.cwd);
   const config = loadConfig(cwd);
   const groupsResult = await loadGroups(opts, cwd, config.audit.minSeverity);
 

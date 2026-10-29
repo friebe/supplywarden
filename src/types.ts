@@ -51,6 +51,10 @@ export type RootPackage = {
   name: string;
   version: string;
   range?: string;
+  /** Workspace package that declared this root. Omitted for the workspace root. */
+  importer?: string;
+  /** `default` for `catalog:`, otherwise the named catalog. */
+  catalog?: string;
 };
 
 export type DependencyKind = "production" | "development" | "optional";
@@ -100,6 +104,10 @@ export type UpgradeTarget = {
   to?: string;
   /** Newer versions tried before `to` that still allow the vuln (e.g. 23.2.1). */
   skipped?: string[];
+  /** `pnpm --filter` package name. Omitted for the workspace root and for npm/yarn. */
+  filter?: string;
+  /** Catalog name when this root is declared as `catalog:`. */
+  catalog?: string;
 };
 
 export type Decision = {

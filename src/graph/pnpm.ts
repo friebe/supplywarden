@@ -3,6 +3,14 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { GraphAnalysis } from "../types.js";
 import { analyzeFlatGraph, emptyGraph, type DirectDep, type FlatNode } from "./flat.js";
+import {
+  catalogSpec,
+  findPnpmRoot,
+  importerPackageName,
+  isWorkspaceSpecifier,
+  readCatalogs,
+  type Catalogs,
+} from "./workspace.js";
 
 type PnpmImporterBag = Record<string, { specifier?: string; version?: string } | string>;
 
@@ -33,11 +41,13 @@ export function pnpmLockPath(cwd: string): string {
 }
 
 export function hasPnpmLock(cwd: string): boolean {
-  return existsSync(pnpmLockPath(cwd));
+  const root = findPnpmRoot(cwd);
+  return Boolean(root && existsSync(pnpmLockPath(root)));
 }
 
 export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
-  const path = pnpmLockPath(cwd);
+  const root = findPnpmRoot(cwd) ?? cwd;
+  const path = pnpmLockPath(root);
   if (!existsSync(path)) return emptyGraph(pkgName);
   let lock: PnpmLock;
   try {
@@ -74,11 +84,13 @@ export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
   }
 
   const directs: DirectDep[] = [];
+  const catalogs = readCatalogs(root);
   const importers = lock.importers ?? { ".": lock };
-  for (const importer of Object.values(importers)) {
-    pushImporterBag(directs, nodes, importer.dependencies, "prod");
-    pushImporterBag(directs, nodes, importer.devDependencies, "dev");
-    pushImporterBag(directs, nodes, importer.optionalDependencies, "opt");
+  for (const [key, importer] of Object.entries(importers)) {
+    const importerName = importerPackageName(root, key);
+    pushImporterBag(directs, nodes, importer.dependencies, "prod", importerName, catalogs);
+    pushImporterBag(directs, nodes, importer.devDependencies, "dev", importerName, catalogs);
+    pushImporterBag(directs, nodes, importer.optionalDependencies, "opt", importerName, catalogs);
   }
 
   return analyzeFlatGraph(pkgName, nodes, directs, (from, depName, spec) =>
@@ -91,21 +103,28 @@ function pushImporterBag(
   nodes: Map<string, FlatNode>,
   bag: PnpmImporterBag | undefined,
   kind: DirectDep["bag"],
+  importer: string | undefined,
+  catalogs: Catalogs,
 ): void {
   if (!bag) return;
   for (const [name, raw] of Object.entries(bag)) {
     const specifier = typeof raw === "string" ? raw : (raw.specifier ?? "");
     const versionField = typeof raw === "string" ? raw : (raw.version ?? "");
+    if (isWorkspaceSpecifier(specifier, versionField)) continue;
     const node =
       resolvePnpmDep(nodes, undefined, name, versionField) ??
       resolvePnpmDep(nodes, undefined, name, specifier);
     if (!node) continue;
+    const catalog = catalogSpec(catalogs, specifier, name);
+    const range = catalog ? catalog.range || versionField : specifier || versionField;
     directs.push({
       name,
       version: node.version,
-      range: specifier || versionField,
+      range,
       bag: kind,
       id: node.id,
+      ...(importer ? { importer } : {}),
+      ...(catalog ? { catalog: catalog.name } : {}),
     });
   }
 }

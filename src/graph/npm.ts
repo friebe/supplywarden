@@ -10,6 +10,7 @@ import type {
 import { dependencyKindLabel, inferDependencyKind, mergeDependencyKind } from "./kind.js";
 import { emptyGraph } from "./flat.js";
 import { analyzePnpmGraph, hasPnpmLock } from "./pnpm.js";
+import { findPnpmRoot } from "./workspace.js";
 import { analyzeYarnGraph, hasYarnLock } from "./yarn.js";
 
 export { dependencyKindLabel, inferDependencyKind, mergeDependencyKind };
@@ -245,6 +246,7 @@ export function detectPackageManager(cwd: string): PackageManager | "unknown" {
   if (existsSync(join(cwd, "pnpm-lock.yaml"))) return "pnpm";
   if (existsSync(join(cwd, "yarn.lock"))) return "yarn";
   if (existsSync(join(cwd, "package-lock.json"))) return "npm";
+  if (findPnpmRoot(cwd)) return "pnpm";
   return "unknown";
 }
 

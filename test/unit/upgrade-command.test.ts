@@ -78,6 +78,39 @@ describe("rootUpgradeCommand", () => {
     });
   });
 
+  it("filters a pnpm workspace member and does not add a catalog dependency", () => {
+    expect(
+      rootUpgradeCommands("pnpm", [
+        { name: "left-pad", to: "1.3.0", filter: "web" },
+        { name: "ms", to: "2.1.3", filter: "@repo/ui" },
+      ]),
+    ).toEqual([
+      {
+        file: "pnpm",
+        args: ["--filter", "web", "add", "left-pad@1.3.0"],
+        display: "pnpm --filter web add left-pad@1.3.0",
+        kind: "install",
+      },
+      {
+        file: "pnpm",
+        args: ["--filter", "@repo/ui", "add", "ms@2.1.3"],
+        display: "pnpm --filter '@repo/ui' add ms@2.1.3",
+        kind: "install",
+      },
+    ]);
+    expect(
+      rootUpgradeCommand("pnpm", [{ name: "minimist", to: "1.2.8", catalog: "default" }]),
+    ).toEqual({
+      file: "pnpm",
+      args: [],
+      display: "Set minimist to 1.2.8 in pnpm-workspace.yaml, then pnpm install",
+      kind: "catalog",
+    });
+    expect(
+      rootUpgradeCommand("npm", [{ name: "left-pad", to: "1.3.0", filter: "web" }])?.display,
+    ).toBe("npm install left-pad@1.3.0");
+  });
+
   it("uses nx migrate only when the root is the nx CLI", () => {
     expect(isNxCli("nx")).toBe(true);
     expect(isNxCli("@nx/js")).toBe(false);

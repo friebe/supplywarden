@@ -1,9 +1,11 @@
 import { analyzeNpmGraph } from "../graph/npm.js";
+import { resolveProjectDir } from "../graph/workspace.js";
 import { nowIso } from "../util/time.js";
 import type { CommandResult } from "../types.js";
 
 export function runWhy(opts: { cwd: string; package: string }): CommandResult {
-  const graph = analyzeNpmGraph(opts.cwd, opts.package);
+  const cwd = resolveProjectDir(opts.cwd);
+  const graph = analyzeNpmGraph(cwd, opts.package);
   const messages = [
     graph.inTree
       ? `${opts.package} resolved as ${graph.versions.join(", ")}`
@@ -20,7 +22,7 @@ export function runWhy(opts: { cwd: string; package: string }): CommandResult {
     report: {
       title: `why ${opts.package}`,
       generatedAt: nowIso(),
-      cwd: opts.cwd,
+      cwd,
       summary: { inTree: graph.inTree ? 1 : 0, roots: graph.roots.length },
       entries: [],
     },

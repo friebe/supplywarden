@@ -14,6 +14,10 @@ export type DirectDep = {
   range: string;
   bag: "prod" | "dev" | "opt";
   id: string;
+  /** Workspace package that declared this dependency. */
+  importer?: string;
+  /** `default` or a named catalog when the specifier is `catalog:`. */
+  catalog?: string;
 };
 
 export function emptyGraph(pkgName: string): GraphAnalysis {
@@ -65,10 +69,12 @@ export function analyzeFlatGraph(
         chainKeys.add(key);
         chains.push({ path: chainPath, package: pkgName, version: node.version });
       }
-      rootMap.set(origin.name, {
+      rootMap.set(`${origin.importer ?? ""}\0${origin.name}`, {
         name: origin.name,
         version: origin.version,
         range: origin.range,
+        ...(origin.importer ? { importer: origin.importer } : {}),
+        ...(origin.catalog ? { catalog: origin.catalog } : {}),
       });
       const parent = path.length >= 2 ? path[path.length - 2] : undefined;
       if (parent) {
