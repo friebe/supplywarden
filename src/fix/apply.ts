@@ -10,6 +10,7 @@ import {
   breakingUpgradeNote,
   formatUpgradeTargets,
   pinLabel,
+  safeDirectCopyNote,
 } from "../decision/engine.js";
 import { resolvePackageManager } from "../graph/npm.js";
 import type {
@@ -91,6 +92,8 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
 
   const pinNote = breakingPinNote(group.package, graph.versions, forcedVersion);
   if (pinNote) messages.push(pinNote);
+  const directNote = safeDirectCopyNote(graph, group.advisories, scopes);
+  if (directNote) messages.push(directNote);
 
   const where = pinLabel(group.package, forcedVersion, scopes);
   if (!opts.apply) {

@@ -7,6 +7,7 @@ import {
   lookupFromRegistry,
   pinLabel,
   rangeRejectionNote,
+  safeDirectCopyNote,
   resolveUpgradeDecision,
   stillVulnerable,
 } from "../decision/engine.js";
@@ -193,6 +194,7 @@ function toFinding(
     ...base,
     summary: [
       forced ? pinLabel(group.package, forced, scopes) : decision.reason,
+      forced ? safeDirectCopyNote(graph, group.advisories, scopes) : undefined,
       forced
         ? rangeRejectionNote({
             pkg: group.package,

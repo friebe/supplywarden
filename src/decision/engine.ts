@@ -86,7 +86,7 @@ export function decide(opts: {
     pinDevelopment: opts.config.pinDevelopment,
   });
 
-  const scopes = overrideScopes(opts.graph);
+  const scopes = overrideScopes(opts.graph, opts.advisories);
   const scope = scopes[0] ?? { type: "global" as const };
 
   const threshold = opts.config.upgradeRootThreshold;
@@ -178,12 +178,31 @@ export function breakingUpgradeNote(decision?: Decision): string | undefined {
   return `No override written. The advisory only closes with a breaking major upgrade: ${summary}. package.json was left unchanged.`;
 }
 
-/** Installed copies that would be forced onto a new major. */
+function majorPinLabels(
+  pkg: string,
+  installed: string[],
+  forced: string,
+  direction: "up" | "down",
+): string {
+  return installed
+    .filter((version) => {
+      if (!majorJumpLabel(version, forced)) return false;
+      const fromMajor = major(version);
+      const toMajor = major(forced);
+      return direction === "up" ? fromMajor < toMajor : fromMajor > toMajor;
+    })
+    .map((version) => `${pkg}@${version} → ${forced}`)
+    .join(", ");
+}
+
+/** Installed copies the pin would move onto another major. */
 export function breakingPinSummary(pkg: string, installed: string[], forced?: string): string {
   if (!forced) return "";
-  return installed
-    .filter((version) => majorJumpLabel(version, forced))
-    .map((version) => `${pkg}@${version} → ${forced}`)
+  return [
+    majorPinLabels(pkg, installed, forced, "up"),
+    majorPinLabels(pkg, installed, forced, "down"),
+  ]
+    .filter(Boolean)
     .join(", ");
 }
 
@@ -192,9 +211,13 @@ export function breakingPinNote(
   installed: string[],
   forced?: string,
 ): string | undefined {
-  const summary = breakingPinSummary(pkg, installed, forced);
-  if (!summary) return undefined;
-  return `Breaking major pin: ${summary}. Dependents still on the old major can break.`;
+  if (!forced) return undefined;
+  const up = majorPinLabels(pkg, installed, forced, "up");
+  const down = majorPinLabels(pkg, installed, forced, "down");
+  const notes: string[] = [];
+  if (up) notes.push(`Breaking major pin: ${up}. Dependents still on the old major can break.`);
+  if (down) notes.push(`Breaking major pin: ${down}. Forcing an older major can break.`);
+  return notes.join(" ") || undefined;
 }
 
 /** Lowest proven root version(s) that close the advisory, e.g. `nx@23.2.1 → 23.2.5`. */
@@ -404,22 +427,43 @@ function rangeMinVersion(spec: string): string | undefined {
   }
 }
 
-/** One scoped pin per immediate parent. A direct dependency stays a global pin. */
-export function overrideScopes(graph: GraphAnalysis): OverrideScope[] {
+function copyStillVulnerable(version: string | undefined, advisories?: Advisory[]): boolean {
+  if (!advisories) return true;
+  if (!version || version === "?") return true;
+  return stillVulnerable(version, advisories);
+}
+
+/** One scoped pin per parent that still pulls a vulnerable copy. A vulnerable direct dependency stays a global pin. */
+export function overrideScopes(graph: GraphAnalysis, advisories?: Advisory[]): OverrideScope[] {
   const parents = new Set<string>();
-  let direct = graph.roots.some((root) => root.name === graph.package);
+  let directVulnerable = graph.roots.some(
+    (root) => root.name === graph.package && copyStillVulnerable(root.version, advisories),
+  );
   for (const chain of graph.chains) {
     const names = chain.path.map((segment) => stripVersion(segment));
     const idx = names.lastIndexOf(graph.package);
     if (idx <= 0) {
-      direct = true;
+      if (copyStillVulnerable(chain.version, advisories)) directVulnerable = true;
       continue;
     }
+    if (!copyStillVulnerable(chain.version, advisories)) continue;
     const parent = names[idx - 1];
     if (parent) parents.add(parent);
   }
-  if (direct || parents.size === 0) return [{ type: "global" }];
+  if (directVulnerable || parents.size === 0) return [{ type: "global" }];
   return [...parents].sort().map((parent) => ({ type: "scoped", parent }));
+}
+
+/** The installed direct copy is already outside the advisory, so the pin must not move it. */
+export function safeDirectCopyNote(
+  graph: GraphAnalysis,
+  advisories: Advisory[],
+  scopes: OverrideScope[],
+): string | undefined {
+  if (scopes.some((scope) => scope.type === "global")) return undefined;
+  const version = graph.roots.find((root) => root.name === graph.package)?.version;
+  if (!version || version === "?" || stillVulnerable(version, advisories)) return undefined;
+  return `${graph.package}@${version} is already outside the advisory.`;
 }
 
 export function pinLabel(pkg: string, version: string, scopes: OverrideScope[]): string {

@@ -10,6 +10,8 @@ import {
   decide,
   overrideScopes,
   rangeRejectionNote,
+  safeDirectCopyNote,
+  breakingPinNote,
 } from "../../src/decision/engine.js";
 import { DEFAULT_CONFIG } from "../../src/config.js";
 import { createOfflineRegistry } from "../../src/registry/verify.js";
@@ -105,6 +107,22 @@ describe("decision engine", () => {
     expect(decision.reason).toMatch(/development dependency/);
     expect(decision.reason).toMatch(/No root upgrade and no pin/);
   });
+
+  it("warns when a pin moves onto a newer major", () => {
+    expect(breakingPinNote("left-pad", ["1.3.0"], "2.0.0")).toBe(
+      "Breaking major pin: left-pad@1.3.0 → 2.0.0. Dependents still on the old major can break.",
+    );
+  });
+
+  it("warns when a pin forces an older major", () => {
+    expect(breakingPinNote("undici", ["8.21.0"], "7.30.1")).toBe(
+      "Breaking major pin: undici@8.21.0 → 7.30.1. Forcing an older major can break.",
+    );
+  });
+
+  it("stays quiet when the pin keeps the same major", () => {
+    expect(breakingPinNote("undici", ["7.28.0"], "7.30.1")).toBeUndefined();
+  });
 });
 
 describe("advisory grouping", () => {
@@ -177,6 +195,58 @@ describe("override scope", () => {
         chains: [{ path: ["qs@6.5.0"], package: "qs", version: "6.5.0" }],
         dependerRanges: [],
       }),
+    ).toEqual([{ type: "global" }]);
+  });
+
+  it("scopes the pin when the direct copy is already outside the advisory", () => {
+    const advisories = [
+      { severity: "high" as const, vulnerableRange: "< 8.3.3", patchedVersion: "8.3.3" },
+    ];
+    const graph = {
+      package: "vite",
+      versions: ["8.3.5", "8.3.0", "6.3.5"],
+      inTree: true,
+      roots: [
+        { name: "vite", version: "8.3.5" },
+        { name: "@angular/build", version: "21.0.0" },
+        { name: "vitest", version: "3.2.0" },
+      ],
+      chains: [
+        { path: ["vite@8.3.5"], package: "vite", version: "8.3.5" },
+        { path: ["@angular/build@21.0.0", "vite@8.3.0"], package: "vite", version: "8.3.0" },
+        { path: ["vitest@3.2.0", "vite@6.3.5"], package: "vite", version: "6.3.5" },
+      ],
+      dependerRanges: [],
+    };
+    const scopes = overrideScopes(graph, advisories);
+    expect(scopes).toEqual([
+      { type: "scoped", parent: "@angular/build" },
+      { type: "scoped", parent: "vitest" },
+    ]);
+    expect(safeDirectCopyNote(graph, advisories, scopes)).toBe(
+      "vite@8.3.5 is already outside the advisory.",
+    );
+  });
+
+  it("keeps a global pin when the direct copy is still vulnerable", () => {
+    expect(
+      overrideScopes(
+        {
+          package: "vite",
+          versions: ["8.3.2", "8.3.0"],
+          inTree: true,
+          roots: [
+            { name: "vite", version: "8.3.2" },
+            { name: "vitest", version: "3.2.0" },
+          ],
+          chains: [
+            { path: ["vite@8.3.2"], package: "vite", version: "8.3.2" },
+            { path: ["vitest@3.2.0", "vite@8.3.0"], package: "vite", version: "8.3.0" },
+          ],
+          dependerRanges: [],
+        },
+        [{ severity: "high", vulnerableRange: "< 8.3.3", patchedVersion: "8.3.3" }],
+      ),
     ).toEqual([{ type: "global" }]);
   });
 });

@@ -417,4 +417,49 @@ describe("applyFix root upgrade", () => {
     };
     expect(pkg.overrides?.["left-pad"]).toBe("2.0.0");
   });
+
+  it("still writes a pin that forces an older major, and only warns", async () => {
+    const cwd = await nxProject();
+    const pinDecision = {
+      strategy: "override" as const,
+      reason: "no proven root upgrade",
+      forcedVersion: "7.30.1",
+      scope: { type: "global" as const },
+    };
+    const pinGroup: PackageAlertGroup = {
+      ...group,
+      package: "undici",
+      forcedVersion: "7.30.1",
+      advisories: [
+        { severity: "high", vulnerableRange: ">= 8.0.0 < 8.21.1", patchedVersion: "7.30.1" },
+      ],
+    };
+    const pinGraph: GraphAnalysis = {
+      ...graph,
+      package: "undici",
+      versions: ["8.21.0"],
+    };
+    const result = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group: pinGroup,
+      graph: pinGraph,
+      decision: pinDecision,
+      apply: true,
+      skipInstall: true,
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(
+      /Breaking major pin: undici@8\.21\.0 → 7\.30\.1\. Forcing an older major can break\./,
+    );
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
+      overrides?: { undici?: string };
+    };
+    expect(pkg.overrides?.undici).toBe("7.30.1");
+  });
 });
