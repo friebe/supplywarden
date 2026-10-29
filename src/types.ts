@@ -117,6 +117,12 @@ export type ValidationIssue = {
   blocking: boolean;
 };
 
+/** A vulnerable copy: the install path, and the range the parent asked for. */
+export type FindingTrail = {
+  path: string;
+  range?: string;
+};
+
 /** One transitive finding or leftover override, computed for this run. Nothing is stored. */
 export type Finding = {
   package: string;
@@ -125,6 +131,8 @@ export type Finding = {
   installed: string[];
   roots: string[];
   chains: string[];
+  /** Paths that still reach a vulnerable copy. Safe copies stay out of Via. */
+  trails?: FindingTrail[];
   dependencyKind?: DependencyKind;
   action: Action;
   summary: string;

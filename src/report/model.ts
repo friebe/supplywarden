@@ -56,6 +56,11 @@ export function findingLines(e: Finding): string[] {
   const severity = e.severity !== "unknown" ? `, ${e.severity}` : "";
   const via = e.roots.length ? `, via ${e.roots.join(", ")}` : "";
   const lines = [`${e.package}${severity}${via}`];
+  for (const trail of e.trails ?? []) {
+    if (!trail.path.includes("→") && !trail.range) continue;
+    const range = trail.range ? ` asks for ${e.package}@${trail.range}` : "";
+    lines.push(`${trail.path}${range}`);
+  }
   for (const command of e.commands) lines.push(command);
   if (e.summary) lines.push(e.summary);
   return lines;

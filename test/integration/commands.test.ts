@@ -35,6 +35,9 @@ describe("check", () => {
       });
       const row = result.report.entries.find((e) => e.package === "qs");
       expect(row?.roots.join(" ")).toMatch(/express/);
+      expect(
+        row?.trails?.some((trail) => trail.path.includes("express@4.18.2") && trail.range),
+      ).toBe(true);
       expect(row?.commands.length).toBeGreaterThan(0);
       expect(result.messages[0]).toMatch(/^qs, high, via express@/);
       expect(toMarkdown(result.report)).toMatch(/express/);

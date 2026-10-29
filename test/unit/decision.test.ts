@@ -10,6 +10,7 @@ import {
   decide,
   overrideScopes,
   rangeRejectionNote,
+  vulnerableReach,
   safeDirectCopyNote,
   breakingPinNote,
 } from "../../src/decision/engine.js";
@@ -248,6 +249,33 @@ describe("override scope", () => {
         [{ severity: "high", vulnerableRange: "< 8.3.3", patchedVersion: "8.3.3" }],
       ),
     ).toEqual([{ type: "global" }]);
+  });
+
+  it("leaves a root out of via when its installed copy is already safe", () => {
+    const reach = vulnerableReach(
+      {
+        package: "vite",
+        versions: ["8.3.5", "5.4.0"],
+        inTree: true,
+        roots: [
+          { name: "vite", version: "8.3.5" },
+          { name: "@angular/build", version: "21.0.0" },
+          { name: "vitest", version: "3.2.0" },
+        ],
+        chains: [
+          { path: ["vite@8.3.5"], package: "vite", version: "8.3.5" },
+          { path: ["vitest@3.2.0", "vite@8.3.5"], package: "vite", version: "8.3.5" },
+          { path: ["@angular/build@21.0.0", "vite@5.4.0"], package: "vite", version: "5.4.0" },
+        ],
+        dependerRanges: ["^5.0.0"],
+        dependers: [{ parent: "@angular/build", range: "^5.0.0", version: "21.0.0" }],
+      },
+      [{ severity: "high", vulnerableRange: "< 8.3.3", patchedVersion: "8.3.3" }],
+    );
+    expect(reach.roots.map((root) => root.name)).toEqual(["@angular/build"]);
+    expect(reach.chains.map((chain) => chain.path.join(" → "))).toEqual([
+      "@angular/build@21.0.0 → vite@5.4.0",
+    ]);
   });
 });
 

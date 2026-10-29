@@ -10,6 +10,7 @@ import {
   safeDirectCopyNote,
   resolveUpgradeDecision,
   stillVulnerable,
+  vulnerableReach,
 } from "../decision/engine.js";
 import { analyzeNpmGraph, resolvePackageManager } from "../graph/npm.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
@@ -121,6 +122,11 @@ async function findingFromAudit(
   return toFinding(cwd, group, graph, decision);
 }
 
+function segmentName(segment: string): string {
+  const at = segment.lastIndexOf("@");
+  return at > 0 ? segment.slice(0, at) : segment;
+}
+
 function toFinding(
   cwd: string,
   group: PackageAlertGroup,
@@ -128,8 +134,16 @@ function toFinding(
   decision: Decision,
 ): Finding {
   const pm = resolvePackageManager(cwd);
-  const roots = graph.roots.map((r) => `${r.name}@${r.version}`);
-  const chains = graph.chains.map((c) => c.path.join(" → "));
+  const reach = vulnerableReach(graph, group.advisories);
+  const roots = reach.roots.map((r) => `${r.name}@${r.version}`);
+  const chains = reach.chains.map((c) => c.path.join(" → "));
+  const trails = reach.chains.map((chain) => {
+    const path = chain.path.join(" → ");
+    const parentSeg = chain.path.length >= 2 ? chain.path[chain.path.length - 2] : undefined;
+    const parent = parentSeg ? segmentName(parentSeg) : "";
+    const range = parent ? graph.dependers?.find((dep) => dep.parent === parent)?.range : undefined;
+    return range ? { path, range } : { path };
+  });
   const base: Finding = {
     package: group.package,
     severity: group.maxSeverity,
@@ -137,6 +151,7 @@ function toFinding(
     installed: graph.versions,
     roots,
     chains,
+    trails,
     dependencyKind: graph.dependencyKind,
     action: decision.strategy,
     summary: decision.reason,

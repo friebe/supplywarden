@@ -81,6 +81,10 @@
     .name { font-weight: 650; }
     .name a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
     .name a:hover { text-decoration-color: var(--ink); }
+    td.via details > summary { cursor: pointer; }
+    td.via details > summary::marker { color: var(--muted); }
+    td.via .trail { margin-top: 6px; }
+    td.via .trail code { white-space: normal; }
     tr.mismatch { background: var(--amber-bg); }
     tr.mismatch .pin { color: var(--amber); font-weight: 650; }
     td code { display: block; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
@@ -122,6 +126,27 @@
         return roots.length > 2 ? shown + " +" + (roots.length - 2) : shown;
       }
       return (entry.roots || []).length ? "direct" : "";
+    }
+    function viaCell(entry) {
+      const td = el("td", "via");
+      const label = via(entry) || "—";
+      const trails = (entry.trails || []).filter((trail) => trail.path && (trail.path.includes("→") || trail.range));
+      if (!trails.length) {
+        td.textContent = label;
+        return td;
+      }
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = label;
+      details.append(summary);
+      for (const trail of trails) {
+        const line = el("div", "trail");
+        line.append(el("code", "", trail.path));
+        if (trail.range) line.append(el("div", "sub", "asks for " + entry.package + "@" + trail.range));
+        details.append(line);
+      }
+      td.append(details);
+      return td;
     }
     function firstSentence(text) {
       const value = String(text || "").trim();
@@ -212,9 +237,7 @@
           action.append(el("div", "", entry.action));
           if (entry.severity && entry.severity !== "unknown") action.append(el("div", "sub sev " + entry.severity, entry.severity));
           if (entry.dependencyKind && entry.dependencyKind !== "production") action.append(el("div", "sub", entry.dependencyKind));
-          const from = el("td", "via", via(entry) || "—");
-          const chain = (entry.chains || [])[0];
-          if (chain) from.title = chain;
+          const from = viaCell(entry);
           const done = el("td", "do");
           const command = (entry.commands || [])[0];
           if (command) done.append(el("code", "", command));
@@ -252,7 +275,7 @@
             nameCell(entry),
             el("td", "", (entry.installed || []).join(", ") || "—"),
             el("td", "pin", entry.forcedVersion || "—"),
-            el("td", "via", via(entry) || "—"),
+            viaCell(entry),
           );
           return tr;
         })));

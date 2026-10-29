@@ -7,6 +7,7 @@ import type {
   Depender,
   GraphAnalysis,
   OverrideScope,
+  RootPackage,
   RegistryClient,
   Severity,
   Strategy,
@@ -431,6 +432,20 @@ function copyStillVulnerable(version: string | undefined, advisories?: Advisory[
   if (!advisories) return true;
   if (!version || version === "?") return true;
   return stillVulnerable(version, advisories);
+}
+
+/** Roots and chains whose installed copy is still inside the advisory. A safe copy stays out of Via. */
+export function vulnerableReach(
+  graph: GraphAnalysis,
+  advisories: Advisory[],
+): { roots: RootPackage[]; chains: DependencyChain[] } {
+  const chains = graph.chains.filter((chain) => stillVulnerable(chain.version, advisories));
+  if (!chains.length) return { roots: graph.roots, chains: graph.chains };
+  const names = new Set(
+    chains.map((chain) => stripVersion(chain.path[0] ?? "")).filter((name) => name.length > 0),
+  );
+  const roots = graph.roots.filter((root) => names.has(root.name));
+  return { roots: roots.length ? roots : graph.roots, chains };
 }
 
 /** One scoped pin per parent that still pulls a vulnerable copy. A vulnerable direct dependency stays a global pin. */
