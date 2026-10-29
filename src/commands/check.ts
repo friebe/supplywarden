@@ -162,7 +162,12 @@ function toFinding(
   if (decision.strategy === "upgrade") {
     const forced = decision.forcedVersion ?? group.forcedVersion;
     const targets = withDirectPatch(group.package, forced, decision.upgradeTargets ?? []);
-    const commands = rootUpgradeCommands(pm, targets).map((c) => c.display);
+    let commands = rootUpgradeCommands(pm, targets).map((c) => c.display);
+    if (!commands.length && forced) {
+      commands = rootUpgradeCommands(pm, [{ name: group.package, to: forced }]).map(
+        (command) => command.display,
+      );
+    }
     const bump = formatUpgradeTargets({ ...decision, upgradeTargets: targets });
     const noted = { ...decision, upgradeTargets: targets };
     const note = breakingUpgradeNote(noted);

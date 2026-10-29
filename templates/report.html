@@ -80,7 +80,8 @@
     td { padding: 9px 12px; border-top: 1px solid var(--line); vertical-align: top; }
     .name { font-weight: 650; }
     .name a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
-    .name a:hover { text-decoration-color: var(--ink); }
+    .name a:hover, td.do a:hover { text-decoration-color: var(--ink); }
+    td.do a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
     td.via details > summary { cursor: pointer; }
     td.via details > summary::marker { color: var(--muted); }
     td.via .trail { margin-top: 6px; }
@@ -126,6 +127,32 @@
         return roots.length > 2 ? shown + " +" + (roots.length - 2) : shown;
       }
       return (entry.roots || []).length ? "direct" : "";
+    }
+    function advisoryNote(entry) {
+      const seen = new Set();
+      const links = [];
+      for (const advisory of entry.advisories || []) {
+        const id = advisory.cveId || advisory.ghsaId;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        links.push({
+          id,
+          href: advisory.cveId
+            ? "https://nvd.nist.gov/vuln/detail/" + advisory.cveId
+            : "https://github.com/advisories/" + advisory.ghsaId,
+        });
+      }
+      if (!links.length) return null;
+      const note = el("div", "sub");
+      for (const link of links) {
+        const a = document.createElement("a");
+        a.href = link.href;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = link.id;
+        note.append(a, document.createTextNode(" "));
+      }
+      return note;
     }
     function viaCell(entry) {
       const td = el("td", "via");
@@ -239,9 +266,10 @@
           if (entry.dependencyKind && entry.dependencyKind !== "production") action.append(el("div", "sub", entry.dependencyKind));
           const from = viaCell(entry);
           const done = el("td", "do");
-          if (entry.advisory) done.append(el("div", "sub", entry.advisory));
           const command = (entry.commands || [])[0];
           if (command) done.append(el("code", "", command));
+          const note = advisoryNote(entry);
+          if (note) done.append(note);
           const why = firstSentence(entry.summary);
           if (why) done.append(el("div", "sub", why));
           tr.append(nameCell(entry), action, from, done);

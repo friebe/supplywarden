@@ -3,17 +3,19 @@ import { advisoryBrief, withDirectPatch } from "../../src/report/model.js";
 import { rootUpgradeCommands } from "../../src/fix/upgrade-command.js";
 
 describe("advisory brief", () => {
-  it("names the title, the range, and the patched version", () => {
+  it("names the floor and links the CVE", () => {
     expect(
       advisoryBrief([
         {
           severity: "low",
-          title: "KaTeX does not escape HTML",
+          title: "KaTeX does not escape HTML from insufficient escaping",
           vulnerableRange: "< 0.16.11",
           patchedVersion: "0.16.11",
+          cveId: "CVE-2024-28243",
+          ghsaId: "GHSA-katex",
         },
       ]),
-    ).toBe("KaTeX does not escape HTML: < 0.16.11, patched in 0.16.11");
+    ).toBe("https://nvd.nist.gov/vuln/detail/CVE-2024-28243");
   });
 
   it("installs a direct package at the advisory patch", () => {

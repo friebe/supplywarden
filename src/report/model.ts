@@ -52,22 +52,24 @@ export function toMarkdown(report: ReportModel): string {
   return lines.join("\n");
 }
 
-/** Title, vulnerable range, and the version the advisory calls patched. */
+function advisoryHref(advisory: Advisory): string | undefined {
+  if (advisory.cveId) return `https://nvd.nist.gov/vuln/detail/${advisory.cveId}`;
+  if (advisory.ghsaId) return `https://github.com/advisories/${advisory.ghsaId}`;
+  return undefined;
+}
+
+/** Link to the CVE, or the GitHub advisory when no CVE is named. */
 export function advisoryBrief(advisories: Advisory[]): string {
-  return advisories
-    .map((advisory) => {
-      const name = advisory.title?.trim() || advisory.ghsaId || advisory.cveId;
-      const range =
-        advisory.vulnerableRange && advisory.vulnerableRange !== "*"
-          ? advisory.vulnerableRange
-          : undefined;
-      const patched = advisory.patchedVersion ? `patched in ${advisory.patchedVersion}` : undefined;
-      const detail = [range, patched].filter(Boolean).join(", ");
-      if (name && detail) return `${name}: ${detail}`;
-      return name || detail || "";
-    })
-    .filter(Boolean)
-    .join(" ");
+  const seen = new Set<string>();
+  const hrefs: string[] = [];
+  for (const advisory of advisories) {
+    const href = advisoryHref(advisory);
+    const id = advisory.cveId || advisory.ghsaId;
+    if (!href || !id || seen.has(id)) continue;
+    seen.add(id);
+    hrefs.push(href);
+  }
+  return hrefs.join(" ");
 }
 
 /** A direct dependency can move to the advisory's patched version without a registry proof. */
@@ -86,13 +88,13 @@ export function findingLines(e: Finding): string[] {
   const severity = e.severity !== "unknown" ? `, ${e.severity}` : "";
   const via = e.roots.length ? `, via ${e.roots.join(", ")}` : "";
   const lines = [`${e.package}${severity}${via}`];
-  if (e.advisory) lines.push(e.advisory);
   for (const trail of e.trails ?? []) {
     if (!trail.path.includes("→") && !trail.range) continue;
     const range = trail.range ? ` asks for ${e.package}@${trail.range}` : "";
     lines.push(`${trail.path}${range}`);
   }
   for (const command of e.commands) lines.push(command);
+  if (e.advisory) lines.push(e.advisory);
   if (e.summary) lines.push(e.summary);
   return lines;
 }

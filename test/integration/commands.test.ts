@@ -38,10 +38,10 @@ describe("check", () => {
       expect(
         row?.trails?.some((trail) => trail.path.includes("express@4.18.2") && trail.range),
       ).toBe(true);
-      expect(row?.advisory).toMatch(/< 6\.11\.0, patched in 6\.11\.2/);
+      expect(row?.commands).toContain("npm install qs@6.11.2");
       expect(row?.commands.some((command) => command.startsWith("supplywarden why"))).toBe(false);
       expect(result.messages[0]).toMatch(/^qs, high, via express@/);
-      expect(result.messages.join("\n")).toMatch(/patched in 6\.11\.2/);
+      expect(result.messages.join("\n")).toMatch(/npm install qs@6\.11\.2/);
       expect(toMarkdown(result.report)).toMatch(/express/);
       expect(existsSync(join(cwd, "security-metadata.json"))).toBe(false);
       expect(result.writtenFiles).toBeUndefined();
@@ -74,6 +74,7 @@ describe("why / fix", () => {
             severity: "high",
             range: "< 4.17.22",
             title: "lodash vulnerable to prototype pollution",
+            cveId: "CVE-2021-23337",
             patchedVersion: "4.17.22",
           },
         ]),
@@ -84,9 +85,7 @@ describe("why / fix", () => {
         },
       });
       const row = result.report.entries.find((entry) => entry.package === "lodash");
-      expect(row?.advisory).toBe(
-        "lodash vulnerable to prototype pollution: < 4.17.22, patched in 4.17.22",
-      );
+      expect(row?.advisory).toBe("https://nvd.nist.gov/vuln/detail/CVE-2021-23337");
       expect(row?.commands).toContain("npm install lodash@4.17.22");
       expect(row?.commands.some((command) => command.startsWith("supplywarden why"))).toBe(false);
     });
