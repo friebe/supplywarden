@@ -1,245 +1,100 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createStaticAudit } from "../../src/audit/client.js";
-import { createStaticInstall } from "../../src/install/client.js";
-import { createLiveRegistry, createOfflineRegistry } from "../../src/registry/verify.js";
-import { runInit } from "../../src/commands/init.js";
+import { createLiveRegistry } from "../../src/registry/verify.js";
 import { runCheck } from "../../src/commands/check.js";
 import { runDoctor } from "../../src/commands/doctor.js";
 import { runFix } from "../../src/commands/fix.js";
 import { runWhy } from "../../src/commands/why.js";
-import { runSync } from "../../src/commands/sync.js";
-import { runVerify } from "../../src/commands/verify.js";
 import { renderHtml } from "../../src/report/html.js";
 import { toMarkdown } from "../../src/report/model.js";
 import { extractExistingOverrides, readPackageJson } from "../../src/metadata/sync.js";
 import { fixtureDir, withFixture } from "../helpers/fixture-project.js";
-import { FIXTURES_ROOT } from "../helpers/fixture-project.js";
 
-describe("runInit", () => {
-  it("imports 5 overrides from package.json", async () => {
-    await withFixture("npm-five-overrides", async (dir) => {
-      const result = await Promise.resolve(runInit({ cwd: dir }));
-      expect(result.exitCode).toBe(0);
-      expect(result.report.summary.imported).toBe(5);
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries).toHaveLength(5);
-      expect(meta.entries.every((e: { needsReview: boolean }) => e.needsReview)).toBe(true);
-      const created = new Date(meta.entries[0].createdAt).getTime();
-      const reviewBy = new Date(meta.entries[0].reviewBy).getTime();
-      expect(reviewBy - created).toBeGreaterThanOrEqual(6 * 86_400_000);
+const qs = {
+  package: "qs",
+  severity: "high" as const,
+  range: "< 6.11.0",
+  ghsaId: "GHSA-qs-high",
+  patchedVersion: "6.11.2",
+};
+
+describe("check", () => {
+  it("shows the root and a next command, and writes no metadata file", async () => {
+    await withFixture("npm-simple", async (cwd) => {
+      const result = await runCheck({
+        cwd,
+        audit: createStaticAudit([qs]),
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+        },
+      });
+      const row = result.report.entries.find((e) => e.package === "qs");
+      expect(row?.roots.join(" ")).toMatch(/express/);
+      expect(
+        row?.trails?.some((trail) => trail.path.includes("express@4.18.2") && trail.range),
+      ).toBe(true);
+      expect(row?.commands).toContain("npm install qs@6.11.2");
+      expect(row?.commands.some((command) => command.startsWith("supplywarden why"))).toBe(false);
+      expect(result.messages[0]).toMatch(/^qs, high, via express@/);
+      expect(result.messages.join("\n")).toMatch(/npm install qs@6\.11\.2/);
+      expect(toMarkdown(result.report)).toMatch(/express/);
+      expect(existsSync(join(cwd, "security-metadata.json"))).toBe(false);
+      expect(result.writtenFiles).toBeUndefined();
     });
   });
 
-  it("imports scoped overrides", async () => {
-    await withFixture("npm-scoped-override", async (dir) => {
-      const result = runInit({ cwd: dir });
-      expect(result.report.summary.imported).toBe(1);
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries[0].scope).toEqual({ type: "scoped", parent: "body-parser" });
-      expect(meta.entries[0].package).toBe("qs");
-    });
-  });
-});
-
-describe("runCheck", () => {
-  it("lists package.json overrides as UNTRACKED when metadata is missing", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-five-overrides"), enableAudit: false });
-    expect(result.report.entries).toHaveLength(5);
-    expect(result.report.entries.every((e) => e.status === "UNTRACKED")).toBe(true);
-    expect(result.messages.join("\n")).toMatch(/untracked/);
-    const qs = result.report.entries.find((e) => e.entry.package === "qs");
-    expect(qs?.suggestedAction).toMatch(/express/);
-  });
-
-  it("kitchen-sink fixture reports overdue, removable, drift, pending, verify_failed, untracked", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-mixed"), enableAudit: false });
-    const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.entry.package, e]));
-    expect(byPkg.qs?.status).toBe("OVERDUE");
-    expect(byPkg.lodash?.statuses).toContain("REMOVABLE");
-    expect(byPkg.lodash?.removableReason).toBe("already-at-patched");
-    expect(byPkg.request?.statuses).toContain("REMOVABLE");
-    expect(byPkg.request?.removableReason).toBe("not-in-tree");
-    expect(byPkg.debug?.statuses).toContain("REMOVABLE");
-    expect(byPkg.debug?.removableReason).toBe("no-vulnerable-version");
-    expect(byPkg.minimist?.status).toBe("DRIFT");
-    expect(byPkg.semver?.status).toBe("PENDING_VERIFY");
-    expect(byPkg.tar?.status).toBe("VERIFY_FAILED");
-    expect(byPkg.ws?.status).toBe("UNTRACKED");
-    expect(byPkg.picomatch?.status).toBe("OVERDUE");
-    expect(byPkg.picomatch?.dependencyKind).toBe("development");
-    expect(byPkg.qs?.dependencyKind).toBe("production");
-    expect(byPkg.ip?.status).toBe("OK");
-    expect(byPkg["follow-redirects"]?.status).toBe("OK");
-    expect(byPkg["follow-redirects"]?.entry.resolution).toMatch(/^verify-keep:/);
-    expect(byPkg["nth-check"]?.weakOverride).toBe(true);
-    expect(byPkg.fsevents?.dependencyKind).toBe("optional");
-    expect(byPkg.qs?.suggestedAction).toMatch(/supplywarden why qs/);
-    expect(byPkg.lodash?.suggestedAction).toMatch(/supplywarden verify lodash --apply/);
-    expect(byPkg.request?.suggestedAction).toMatch(/supplywarden verify request --apply/);
-    expect(byPkg.minimist?.suggestedAction).toMatch(/supplywarden sync/);
-    expect(byPkg.semver?.suggestedAction).toMatch(/npm install/);
-    expect(byPkg.tar?.suggestedAction).toMatch(/supplywarden verify tar/);
-    expect(byPkg.tar?.suggestedAction).not.toMatch(/supplywarden why tar/);
-    expect(byPkg.ws?.suggestedAction).toMatch(/supplywarden init/);
-    expect(byPkg["nth-check"]?.suggestedAction).toMatch(/fix --apply/);
-  });
-
-  it("kitchen-sink audit labels NEW nx-only upgrade, mixed nx+lodash, and override over threshold", async () => {
-    await withFixture("npm-mixed", async (dir) => {
+  it("strict exits 1 when a finding still needs a command", async () => {
     const result = await runCheck({
-      cwd: dir,
-      enableAudit: true,
-      audit: createStaticAudit([
-        {
-          package: "smol-toml",
-          severity: "high",
-          range: "< 1.4.2",
-          ghsaId: "GHSA-7w7h-prm2-qmvq",
-          patchedVersion: "1.4.2",
-        },
-        {
-          package: "tslib",
-          severity: "high",
-          range: "< 2.4.1",
-          ghsaId: "GHSA-tslb-mixd-demo",
-          patchedVersion: "2.4.1",
-        },
-        {
-          package: "serialize-javascript",
-          severity: "high",
-          range: "< 6.0.2",
-          ghsaId: "GHSA-h9x2-p7j5-2x6r",
-          patchedVersion: "6.0.2",
-        },
-      ]),
+      cwd: fixtureDir("npm-simple"),
+      strict: true,
+      audit: createStaticAudit([qs]),
       registry: {
         async verifyPackageVersion() {
           return { exists: true, deprecated: null };
         },
-        async versionsNewerThan(pkg) {
-          if (pkg === "nx") return ["23.2.1", "23.2.5"];
-          if (pkg === "lodash") return ["4.17.22"];
-          return [];
-        },
-        async dependencyRange(pkg, version, dep) {
-          if (dep === "smol-toml" && pkg === "nx") {
-            return version === "23.2.5" ? "^1.4.2" : "^1.3.1";
-          }
-          if (dep === "tslib") {
-            if (pkg === "nx") return version === "23.2.5" ? "^2.4.1" : "2.0.0";
-            if (pkg === "lodash") return version === "4.17.22" ? "^2.4.1" : "2.0.0";
-          }
-          return undefined;
-        },
       },
     });
-    const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.entry.package, e]));
-    expect(byPkg["smol-toml"]?.status).toBe("NEW");
-    expect(byPkg["smol-toml"]?.roots).toEqual(["nx"]);
-    expect(byPkg["smol-toml"]?.decision?.strategy).toBe("upgrade");
-    expect(byPkg["smol-toml"]?.decision?.upgradeTargets).toEqual([
-      { name: "nx", from: "23.2.0", to: "23.2.5", skipped: ["23.2.1"] },
-    ]);
-    expect(byPkg["smol-toml"]?.upgradeCommands).toEqual(["npx nx migrate nx@23.2.5"]);
-    expect(byPkg["smol-toml"]?.suggestedAction).toMatch(/nx@23\.2\.0 → 23\.2\.5/);
-    expect(byPkg["smol-toml"]?.suggestedAction).toMatch(/not 23\.2\.1/);
-    expect(result.messages.join("\n")).toMatch(/NEW smol-toml \(lockfile 1\.3\.1\): nx@23\.2\.0 → 23\.2\.5/);
-    expect(toMarkdown(result.report)).toMatch(/## New/);
-    expect(toMarkdown(result.report)).toMatch(/nx@23\.2\.0 → 23\.2\.5 \(not 23\.2\.1/);
-    expect(byPkg.tslib?.status).toBe("NEW");
-    expect(byPkg.tslib?.decision?.strategy).toBe("upgrade");
-    expect(byPkg.tslib?.upgradeCommands).toEqual([
-      "npm install lodash@4.17.22",
-      "npx nx migrate nx@23.2.5",
-    ]);
-    expect(byPkg["serialize-javascript"]?.status).toBe("NEW");
-    expect(byPkg["serialize-javascript"]?.decision?.strategy).toBe("override");
-    expect(byPkg["serialize-javascript"]?.roots?.sort()).toEqual(["ava", "jest", "mocha", "webpack"].sort());
-    });
+    expect(result.exitCode).toBe(1);
   });
+});
 
-  it("loads NEW findings from a Dependabot alert file instead of live audit", async () => {
-    await withFixture("npm-mixed", async (cwd) => {
+describe("pnpm workspace", () => {
+  it("adds through the member filter and leaves a catalog dependency in the workspace file", async () => {
+    const cwd = join(fixtureDir("pnpm-workspace"), "apps/web");
     const result = await runCheck({
       cwd,
-      enableAudit: false,
-      alertPath: join(FIXTURES_ROOT, "alerts/mixed.json"),
-      registry: createLiveRegistry(cwd),
-    });
-    const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.entry.package, e]));
-    expect(byPkg["smol-toml"]?.status).toBe("NEW");
-    expect(byPkg["smol-toml"]?.decision?.upgradeTargets).toEqual([
-      { name: "nx", from: "23.2.0", to: "23.2.5", skipped: ["23.2.1"] },
-    ]);
-    expect(toMarkdown(result.report)).toMatch(/nx@23\.2\.0 → 23\.2\.5 \(not 23\.2\.1/);
-    expect(result.messages.join("\n")).toMatch(/alerts: .*untracked finding/);
-    });
-  });
-
-  it("explains empty fixtures without overrides or metadata", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-simple"), enableAudit: false });
-    expect(result.report.entries).toHaveLength(0);
-    expect(result.messages.join("\n")).toMatch(/Nothing to show/);
-  });
-
-  it("marks override as REMOVABLE/RESOLVED when vuln is gone", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-removable"), enableAudit: false });
-    expect(result.exitCode).toBe(0);
-    expect(result.report.entries[0]!.statuses).toContain("REMOVABLE");
-    expect(result.report.entries[0]!.removableReason).toBe("no-vulnerable-version");
-    expect(result.report.summary.removable).toBeGreaterThanOrEqual(1);
-  });
-
-  it("exits 1 on --strict + overdue high", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-overdue"), strict: true, enableAudit: false });
-    expect(result.exitCode).toBe(1);
-    expect(result.report.entries[0]!.statuses).toContain("OVERDUE");
-  });
-
-  it("detects DRIFT when package.json is missing the override", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-drift"), enableAudit: false });
-    expect(result.report.entries[0]!.status).toBe("DRIFT");
-  });
-
-  it("reports NEW audit findings that are not already overridden", async () => {
-    await withFixture("npm-simple", async (dir) => {
-    const result = await runCheck({
-      cwd: dir,
-      enableAudit: true,
       audit: createStaticAudit([
         {
-          package: "qs",
+          package: "left-pad",
           severity: "high",
-          range: "< 6.11.0",
-          ghsaId: "GHSA-qs-high",
-          patchedVersion: "6.11.2",
+          range: "< 1.3.0",
+          ghsaId: "GHSA-left",
+          patchedVersion: "1.3.0",
         },
-      ]),
-    });
-    expect(result.report.entries.some((e) => e.status === "NEW" && e.entry.package === "qs")).toBe(
-      true,
-    );
-    expect(result.report.summary.auditNew).toBe(1);
-    const qs = result.report.entries.find((e) => e.status === "NEW" && e.entry.package === "qs");
-    expect(qs?.suggestedAction).toMatch(/UPGRADE|OVERRIDE/);
-    expect(qs?.suggestedAction).toMatch(/express|qs@/);
-    expect(qs?.decision?.strategy).toMatch(/upgrade|override/);
-    });
-  });
-
-  it("suggests a newer root version, not the one already installed", async () => {
-    await withFixture("npm-simple", async (dir) => {
-    const result = await runCheck({
-      cwd: dir,
-      enableAudit: true,
-      audit: createStaticAudit([
+        {
+          package: "minimist",
+          severity: "high",
+          range: "< 1.2.8",
+          ghsaId: "GHSA-mini",
+          patchedVersion: "1.2.8",
+        },
+        {
+          package: "ms",
+          severity: "high",
+          range: "< 2.1.3",
+          ghsaId: "GHSA-ms",
+          patchedVersion: "2.1.3",
+        },
         {
           package: "qs",
           severity: "high",
           range: "< 6.11.0",
-          ghsaId: "GHSA-qs-high",
+          ghsaId: "GHSA-qs",
           patchedVersion: "6.11.2",
         },
       ]),
@@ -247,262 +102,63 @@ describe("runCheck", () => {
         async verifyPackageVersion() {
           return { exists: true, deprecated: null };
         },
-        async latestVersion() {
-          return "4.21.2";
-        },
-        async getLatestMatching() {
-          return "4.21.2";
-        },
-        async dependencyRange(pkg, version, dep) {
-          if (pkg === "express" && dep === "qs" && version === "4.21.2") return "6.13.0";
-          if (pkg === "express" && dep === "qs") return "6.5.0";
-          return undefined;
-        },
       },
     });
-    const qs = result.report.entries.find((e) => e.status === "NEW" && e.entry.package === "qs");
-    expect(qs?.decision?.strategy).toBe("upgrade");
-    expect(qs?.decision?.upgradeTargets?.[0]).toMatchObject({
-      name: "express",
-      from: "4.18.2",
-      to: "4.21.2",
-    });
-    expect(qs?.suggestedAction).toMatch(/express@4\.18\.2 → 4\.21\.2/);
-    expect(qs?.suggestedAction).toMatch(/npm install express@4\.21\.2/);
-    expect(qs?.suggestedAction).not.toMatch(/supplywarden fix --apply/);
-    expect(qs?.suggestedAction).not.toMatch(/UPGRADE express@4\.18\.2 —/);
-    const html = renderHtml(result.report);
-    expect(html).toMatch(/function upgradeHint/);
-    expect(html).toContain("express@4.18.2");
-    expect(html).toContain("4.21.2");
-    expect(toMarkdown(result.report)).toMatch(/express@4\.18\.2 → 4\.21\.2/);
-    });
-  });
-
-  it("does not flag audit findings covered by an active override", async () => {
-    const result = await runCheck({
-      cwd: fixtureDir("npm-removable"),
-      enableAudit: true,
-      audit: createStaticAudit([
-        {
-          package: "qs",
-          severity: "high",
-          range: "< 6.11.0",
-          ghsaId: "GHSA-qs-high",
-          patchedVersion: "6.11.2",
-        },
-      ]),
-    });
-    expect(result.report.entries.filter((e) => e.status === "NEW")).toHaveLength(0);
-  });
-
-  it("confirms existing override as RESOLVED when live audit is clear", async () => {
-    const result = await runCheck({
-      cwd: fixtureDir("npm-removable"),
-      enableAudit: true,
-      audit: createStaticAudit([]),
-    });
-    expect(result.report.entries[0]!.statuses).toContain("RESOLVED");
-    expect(["no-vulnerable-version", "audit-clear"]).toContain(result.report.entries[0]!.removableReason);
-  });
-
-  it("strict fails on new audit findings", async () => {
-    await withFixture("npm-simple", async (dir) => {
-    const result = await runCheck({
-      cwd: dir,
-      strict: true,
-      enableAudit: true,
-      audit: createStaticAudit([
-        { package: "qs", severity: "high", range: "< 6.11.0", patchedVersion: "6.11.2" },
-      ]),
-    });
-    expect(result.exitCode).toBe(1);
-    });
-  });
-
-  const provenExpress = createOfflineRegistry(
-    { express: ["4.18.2", "4.18.3", "4.21.2"], qs: ["6.5.0", "6.11.2"] },
-    {
-      express: {
-        "4.18.3": { qs: "6.5.0" },
-        "4.21.2": { qs: "^6.11.2" },
-      },
-    },
-  );
-  const unprovenExpress = createOfflineRegistry(
-    { express: ["4.18.2", "4.18.3"], qs: ["6.5.0", "6.11.2"] },
-    { express: { "4.18.3": { qs: "6.5.0" } } },
-  );
-
-  it("records a first-sight finding so the next check is deferred, not NEW", async () => {
-    await withFixture("npm-simple", async (dir) => {
-      const audit = createStaticAudit([
-        {
-          package: "qs",
-          severity: "high",
-          range: "< 6.11.0",
-          ghsaId: "GHSA-qs-high",
-          patchedVersion: "6.11.2",
-        },
-      ]);
-      const first = await runCheck({
-        cwd: dir,
-        enableAudit: true,
-        audit,
-        registry: unprovenExpress,
-      });
-      expect(first.report.entries.some((e) => e.status === "NEW" && e.entry.package === "qs")).toBe(
-        true,
-      );
-      expect(first.messages.join("\n")).toMatch(/Recorded 1 finding/);
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8")) as {
-        entries: { package: string; strategy: string; reason: string; reviewBy: string }[];
-      };
-      const row = meta.entries.find((e) => e.package === "qs");
-      expect(row?.strategy).toBe("defer");
-      expect(row?.reason).toMatch(/Seen, not applied/);
-      expect(row?.reviewBy).toBeTruthy();
-
-      const second = await runCheck({
-        cwd: dir,
-        strict: true,
-        enableAudit: true,
-        audit,
-        registry: unprovenExpress,
-      });
-      const qs = second.report.entries.find((e) => e.entry.package === "qs");
-      expect(qs?.statuses).toContain("DEFERRED");
-      expect(qs?.statuses).not.toContain("NEW");
-      expect(qs?.suggestedAction).toMatch(/Seen, not applied/);
-      expect(second.exitCode).toBe(0);
-      expect(toMarkdown(second.report)).toMatch(/## Seen, not applied/);
-      expect(renderHtml(second.report)).toContain("Seen, not applied");
-      const again = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8")) as {
-        entries: { package: string; reviewBy: string; strategy: string }[];
-      };
-      expect(again.entries.find((e) => e.package === "qs")?.reviewBy).toBe(row?.reviewBy);
-
-      const promoted = await runCheck({
-        cwd: dir,
-        enableAudit: true,
-        audit,
-        registry: provenExpress,
-      });
-      const upgraded = promoted.report.entries.find((e) => e.entry.package === "qs");
-      expect(upgraded?.statuses).not.toContain("NEW");
-      expect(upgraded?.statuses).not.toContain("DEFERRED");
-      expect(upgraded?.entry.strategy).toBe("upgrade");
-      expect(promoted.messages.join("\n")).toMatch(/DEFERRED qs: now UPGRADE/);
-    });
-  });
-
-  async function writeQsWait(dir: string) {
-    await writeFile(
-      join(dir, "security-metadata.json"),
-      JSON.stringify(
-        {
-          version: 1,
-          entries: [
-            {
-              id: "qs-wait",
-              status: "active",
-              package: "qs",
-              forcedVersion: "6.11.2",
-              scope: { type: "global" },
-              advisories: [
-                {
-                  ghsaId: "GHSA-qs",
-                  severity: "high",
-                  vulnerableRange: "< 6.11.2",
-                  patchedVersion: "6.11.2",
-                },
-              ],
-              reason: "development tree — wait",
-              strategy: "wait",
-              rootPackages: ["express"],
-              dependencyChains: ["express → qs"],
-              packageManager: "npm",
-              manifestPath: "package.json",
-              createdAt: "2026-01-01T00:00:00.000Z",
-              createdBy: "jan",
-              reviewBy: "2020-01-01T00:00:00.000Z",
-              reviewReason: "wait",
-            },
-          ],
-        },
-        null,
-        2,
-      ),
+    expect(result.report.cwd).toBe(fixtureDir("pnpm-workspace"));
+    const left = result.report.entries.find((entry) => entry.package === "left-pad");
+    expect(left?.action).toBe("upgrade");
+    expect(left?.roots).toEqual(["web"]);
+    expect(left?.trails?.some((trail) => trail.path === "web → left-pad@1.0.0")).toBe(true);
+    expect(left?.commands).toContain("pnpm --filter web add left-pad@1.3.0");
+    expect(left?.commands.some((command) => command === "pnpm add left-pad@1.3.0")).toBe(false);
+    const minimist = result.report.entries.find((entry) => entry.package === "minimist");
+    expect(minimist?.roots).toEqual(["@repo/ui"]);
+    expect(minimist?.commands.join(" ")).toMatch(/pnpm-workspace\.yaml/);
+    expect(minimist?.commands.some((command) => command.includes("pnpm add"))).toBe(false);
+    const ms = result.report.entries.find((entry) => entry.package === "ms");
+    expect(ms?.roots).toEqual(["@repo/ui"]);
+    expect(ms?.action).toBe("upgrade");
+    expect(ms?.commands).toContain("pnpm --filter '@repo/ui' add ms@2.1.3");
+    const qsRow = result.report.entries.find((entry) => entry.package === "qs");
+    expect(qsRow?.roots).toEqual(["web → express@4.18.2"]);
+    expect(qsRow?.action).toBe("upgrade");
+    expect(qsRow?.trails?.some((trail) => trail.path.includes("express@4.18.2 → qs@6.5.0"))).toBe(
+      true,
     );
-  }
-
-  it("promotes a saved WAIT row when a root version now closes the advisory", async () => {
-    await withFixture("npm-simple", async (dir) => {
-      await writeQsWait(dir);
-      const result = await runCheck({
-        cwd: dir,
-        enableAudit: false,
-        registry: provenExpress,
-      });
-      const qs = result.report.entries.find((e) => e.entry.package === "qs");
-      expect(qs?.entry.strategy).toBe("upgrade");
-      expect(qs?.decision?.upgradeTargets?.[0]).toMatchObject({
-        name: "express",
-        from: "4.18.2",
-        to: "4.21.2",
-      });
-      expect(qs?.upgradeCommands).toEqual(["npm install express@4.21.2"]);
-      expect(result.messages.join("\n")).toMatch(/WAIT qs: now UPGRADE/);
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries[0].strategy).toBe("upgrade");
-    });
-  });
-
-  it("promotes a saved WAIT row to override on a production tree with no proven upgrade", async () => {
-    await withFixture("npm-simple", async (dir) => {
-      await writeQsWait(dir);
-      const result = await runCheck({
-        cwd: dir,
-        enableAudit: false,
-        registry: unprovenExpress,
-      });
-      const qs = result.report.entries.find((e) => e.entry.package === "qs");
-      expect(qs?.entry.strategy).toBe("override");
-      expect(result.messages.join("\n")).toMatch(/WAIT qs: now OVERRIDE qs@6\.11\.2/);
-    });
-  });
-
-  it("keeps WAIT and moves reviewBy when a development tree still has no proven upgrade", async () => {
-    await withFixture("npm-simple", async (dir) => {
-      const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-      pkg.devDependencies = pkg.dependencies;
-      delete pkg.dependencies;
-      await writeFile(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
-      const lock = JSON.parse(await readFile(join(dir, "package-lock.json"), "utf8"));
-      lock.packages[""].devDependencies = lock.packages[""].dependencies;
-      delete lock.packages[""].dependencies;
-      await writeFile(join(dir, "package-lock.json"), JSON.stringify(lock, null, 2));
-      await writeQsWait(dir);
-      const before = "2020-01-01T00:00:00.000Z";
-      const result = await runCheck({
-        cwd: dir,
-        enableAudit: false,
-        registry: unprovenExpress,
-      });
-      const qs = result.report.entries.find((e) => e.entry.package === "qs");
-      expect(qs?.entry.strategy).toBe("wait");
-      expect(qs?.statuses).not.toContain("OVERDUE");
-      expect(new Date(qs!.entry.reviewBy).getTime()).toBeGreaterThan(new Date(before).getTime());
-      expect(result.messages.join("\n")).toMatch(/WAIT qs: still no proven root upgrade/);
-    });
   });
 });
 
-describe("runWhy / analyze", () => {
+describe("why / fix", () => {
+  it("names a low advisory and the patched version of a direct package", async () => {
+    await withFixture("npm-mixed", async (cwd) => {
+      const result = await runCheck({
+        cwd,
+        audit: createStaticAudit([
+          {
+            package: "lodash",
+            severity: "high",
+            range: "< 4.17.22",
+            title: "lodash vulnerable to prototype pollution",
+            cveId: "CVE-2021-23337",
+            patchedVersion: "4.17.22",
+          },
+        ]),
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+        },
+      });
+      const row = result.report.entries.find((entry) => entry.package === "lodash");
+      expect(row?.advisory).toBe("https://nvd.nist.gov/vuln/detail/CVE-2021-23337");
+      expect(row?.commands).toContain("npm install lodash@4.17.22");
+      expect(row?.commands.some((command) => command.startsWith("supplywarden why"))).toBe(false);
+    });
+  });
+
   it("finds express as root for qs", () => {
     const result = runWhy({ cwd: fixtureDir("npm-simple"), package: "qs" });
     expect(result.exitCode).toBe(0);
-    expect(result.report.summary.roots).toBeGreaterThanOrEqual(1);
     expect(result.messages.join("\n")).toMatch(/express/);
   });
 
@@ -525,58 +181,215 @@ describe("runWhy / analyze", () => {
     expect(result.messages.join("\n")).toMatch(/eslint/);
   });
 
-  it("analyzes qs alert against npm-simple", async () => {
+  it("plans a qs fix from a static audit", async () => {
     const result = await runFix({
       cwd: fixtureDir("npm-simple"),
-      alertPath: join(FIXTURES_ROOT, "alerts/ghsa-qs-high.json"),
       apply: false,
+      audit: createStaticAudit([qs]),
     });
     expect(result.report.decision?.forcedVersion).toBe("6.11.2");
     expect(result.report.groups?.[0]?.package).toBe("qs");
   });
 
-  it("analyzes without alert file via audit by default", async () => {
-    const result = await runFix({
-      cwd: fixtureDir("npm-simple"),
-      apply: false,
-      audit: createStaticAudit([
-        {
-          package: "qs",
-          severity: "high",
-          range: "< 6.11.0",
-          ghsaId: "GHSA-qs-high",
-          patchedVersion: "6.11.2",
-        },
-      ]),
-    });
-    expect(result.report.decision?.forcedVersion).toBe("6.11.2");
-    expect(result.report.groups?.[0]?.package).toBe("qs");
-  });
-
-  it("errors when no alert file and audit is skipped", async () => {
-    const result = await runFix({
-      cwd: fixtureDir("npm-simple"),
-      apply: false,
-      enableAudit: false,
-    });
-    expect(result.exitCode).toBe(1);
-    expect(result.messages.join("\n")).toMatch(/skip-audit|alert file/i);
-  });
-
-  it("tells you to verify --apply when audit is clear but check has REMOVABLE", async () => {
-    const result = await runFix({
+  it("keeps installed pins when the audit is silent and only drops unused overrides", async () => {
+    const result = await runCheck({
       cwd: fixtureDir("npm-mixed"),
-      apply: true,
       audit: createStaticAudit([]),
     });
+    const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.package, e.action]));
+    expect(byPkg.qs).toBe("keep");
+    expect(byPkg["follow-redirects"]).toBe("keep");
+    expect(byPkg.lodash).toBe("drop");
+    expect(byPkg.request).toBe("drop");
+    expect(result.report.entries.some((e) => e.action !== "drop")).toBe(true);
+  });
+
+  it("upgrades a root together with the direct dependency that peers on it", async () => {
+    const cwd = fixtureDir("npm-mixed");
+    const result = await runCheck({
+      cwd,
+      audit: createStaticAudit([
+        {
+          package: "left-pad",
+          severity: "high",
+          range: "< 1.3.0",
+          patchedVersion: "1.3.0",
+        },
+      ]),
+      registry: createLiveRegistry(cwd),
+    });
+    const row = result.report.entries.find((entry) => entry.package === "left-pad");
+    expect(row?.action).toBe("upgrade");
+    expect(row?.commands.join("\n")).toBe("npm install @demo/core@1.2.0 @demo/common@1.2.0");
+  });
+
+  it("pins under the parent when no published root closes the advisory", async () => {
+    const cwd = fixtureDir("npm-mixed");
+    const result = await runCheck({
+      cwd,
+      audit: createStaticAudit([
+        {
+          package: "marked",
+          severity: "high",
+          range: "< 4.0.0",
+          patchedVersion: "4.0.0",
+        },
+      ]),
+      registry: createLiveRegistry(cwd),
+    });
+    const row = result.report.entries.find((entry) => entry.package === "marked");
+    expect(row?.action).toBe("override");
+    expect(row?.summary).toMatch(/under old-tool/);
+    expect(row?.summary).toMatch(/old-tool@1\.0\.0 asks for marked@1\.0\.0/);
+    expect(row?.summary).toMatch(/That parent can fail to build/);
+    expect(row?.commands).toEqual(["supplywarden fix marked --apply"]);
+  });
+
+  it("tells you to upgrade the root when the safe version is outside the installed range", async () => {
+    const result = await runCheck({
+      cwd: fixtureDir("npm-simple"),
+      audit: createStaticAudit([qs]),
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+        async versionsNewerThan(pkg: string) {
+          return pkg === "express" ? ["4.18.3"] : [];
+        },
+        async dependencyRange(pkg: string, version: string, dep: string) {
+          if (pkg === "express" && version === "4.18.3" && dep === "qs") return "6.11.2";
+          return undefined;
+        },
+        async peerDependencies() {
+          return {};
+        },
+      },
+    });
+    const row = result.report.entries.find((entry) => entry.package === "qs");
+    expect(row?.action).toBe("upgrade");
+    expect(row?.commands).toEqual(["npm install express@4.18.3"]);
+    expect(row?.summary).toMatch(/body-parser@1\.20\.1 and express@4\.18\.2 ask for qs@6\.5\.0/);
+    expect(row?.summary).toMatch(/Upgrade the root first\. express@4\.18\.2 → 4\.18\.3/);
+  });
+
+  it("updates Angular core and common together and leaves forms out", async () => {
+    const cwd = fixtureDir("npm-migrations");
+    const result = await runCheck({
+      cwd,
+      audit: createStaticAudit([
+        {
+          package: "left-pad",
+          severity: "high",
+          range: "< 1.3.0",
+          patchedVersion: "1.3.0",
+        },
+      ]),
+      registry: createLiveRegistry(cwd),
+    });
+    const row = result.report.entries.find((entry) => entry.package === "left-pad");
+    expect(row?.action).toBe("upgrade");
+    expect(row?.commands).toEqual(["npx ng update @angular/core@19.2.14 @angular/common@19.2.14"]);
+    expect(row?.summary).toMatch(/together, not one package at a time/);
+    expect(row?.summary).not.toMatch(/@angular\/forms/);
+    expect(row?.upgradeTargets?.map((target) => target.name)).toEqual([
+      "@angular/core",
+      "@angular/common",
+    ]);
+  });
+
+  it("shows nx migrate instead of npm install", async () => {
+    const cwd = fixtureDir("npm-migrations");
+    const result = await runCheck({
+      cwd,
+      audit: createStaticAudit([
+        {
+          package: "smol-toml",
+          severity: "high",
+          range: "< 1.4.2",
+          patchedVersion: "1.4.2",
+        },
+      ]),
+      registry: createLiveRegistry(cwd),
+    });
+    const row = result.report.entries.find((entry) => entry.package === "smol-toml");
+    expect(row?.action).toBe("upgrade");
+    expect(row?.commands).toEqual(["npx nx migrate nx@23.2.5"]);
+  });
+
+  it("updates Storybook with one upgrade command and leaves a loose peer out", async () => {
+    const cwd = fixtureDir("npm-migrations");
+    const result = await runCheck({
+      cwd,
+      audit: createStaticAudit([
+        {
+          package: "braces",
+          severity: "high",
+          range: "< 3.0.2",
+          patchedVersion: "3.0.2",
+        },
+      ]),
+      registry: createLiveRegistry(cwd),
+    });
+    const row = result.report.entries.find((entry) => entry.package === "braces");
+    expect(row?.action).toBe("upgrade");
+    expect(row?.commands).toEqual(["npx storybook@8.6.0 upgrade"]);
+    expect(row?.summary).toMatch(/together, not one package at a time/);
+    expect(row?.upgradeTargets?.map((target) => target.name)).toEqual([
+      "storybook",
+      "@storybook/react",
+    ]);
+  });
+
+  it("writes only the named package", async () => {
+    await withFixture("npm-simple", async (dir) => {
+      await writeFile(
+        join(dir, ".supplywardenrc.json"),
+        JSON.stringify({ upgradeRootThreshold: 0 }),
+      );
+      const result = await runFix({
+        cwd: dir,
+        package: "qs",
+        audit: createStaticAudit([
+          qs,
+          {
+            package: "left-pad",
+            severity: "high",
+            range: "< 1.3.0",
+            ghsaId: "GHSA-left-pad",
+            patchedVersion: "1.3.0",
+          },
+        ]),
+        apply: true,
+        skipInstall: true,
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      const written = extractExistingOverrides(readPackageJson(dir)).map((pin) => pin.package);
+      expect(written).toContain("qs");
+      expect(written).not.toContain("left-pad");
+      expect(result.messages.join("\n")).not.toMatch(/left-pad/);
+    });
+  });
+
+  it("refuses a package the audit does not list", async () => {
+    const result = await runFix({
+      cwd: fixtureDir("npm-simple"),
+      package: "left-pad",
+      audit: createStaticAudit([qs]),
+      apply: false,
+      skipInstall: true,
+    });
     expect(result.exitCode).toBe(1);
-    expect(result.messages.join("\n")).toMatch(/verify --apply/);
-    expect(result.messages.join("\n")).toMatch(/lodash|request/);
+    expect(result.messages.join("\n")).toMatch(/left-pad is not in this audit/);
   });
 });
 
 describe("validation gates", () => {
-  it("writes a safe override when Dependabot patchedVersion is still inside the range", async () => {
+  it("writes a safe override when the patched version is still inside the range", async () => {
     await withFixture("npm-still-vulnerable", async (dir) => {
       await writeFile(
         join(dir, ".supplywardenrc.json"),
@@ -584,7 +397,15 @@ describe("validation gates", () => {
       );
       const result = await runFix({
         cwd: dir,
-        alertPath: join(FIXTURES_ROOT, "alerts/uuid-still-vulnerable.json"),
+        audit: createStaticAudit([
+          {
+            package: "uuid",
+            severity: "high",
+            range: "< 11.1.1",
+            ghsaId: "GHSA-uuid-bad",
+            patchedVersion: "10.0.0",
+          },
+        ]),
         apply: true,
         skipInstall: true,
         registry: {
@@ -597,7 +418,7 @@ describe("validation gates", () => {
       expect(result.messages.join("\n")).toMatch(/uuid@11\.1\.1/);
       const pkg = readPackageJson(dir);
       expect(pkg.overrides?.uuid).toBe("11.1.1");
-      expect(pkg.pnpm?.overrides).toBeUndefined();
+      expect(existsSync(join(dir, "security-metadata.json"))).toBe(false);
     });
   });
 
@@ -605,7 +426,15 @@ describe("validation gates", () => {
     await withFixture("npm-still-vulnerable", async (dir) => {
       const result = await runFix({
         cwd: dir,
-        alertPath: join(FIXTURES_ROOT, "alerts/uuid-unknown-range.json"),
+        audit: createStaticAudit([
+          {
+            package: "uuid",
+            severity: "high",
+            range: "*",
+            ghsaId: "GHSA-uuid-star",
+            patchedVersion: "10.0.0",
+          },
+        ]),
         apply: true,
         skipInstall: true,
         registry: {
@@ -615,14 +444,16 @@ describe("validation gates", () => {
         },
       });
       expect(result.exitCode).toBe(1);
-      expect(result.messages.join("\n")).toMatch(/Not writing package.json|No patched version|STILL_VULNERABLE/);
+      expect(result.messages.join("\n")).toMatch(
+        /Not writing package.json|No patched version|STILL_VULNERABLE/,
+      );
     });
   });
 
   it("rejects NOOP overrides", async () => {
     const result = await runFix({
       cwd: fixtureDir("npm-noop-override"),
-      alertPath: join(FIXTURES_ROOT, "alerts/qs-noop.json"),
+      audit: createStaticAudit([qs]),
       apply: true,
       skipInstall: true,
       registry: {
@@ -639,7 +470,7 @@ describe("validation gates", () => {
     await withFixture("npm-simple", async (dir) => {
       const result = await runFix({
         cwd: dir,
-        alertPath: join(FIXTURES_ROOT, "alerts/ghsa-qs-high.json"),
+        audit: createStaticAudit([qs]),
         apply: true,
         skipInstall: true,
         registry: {
@@ -653,7 +484,7 @@ describe("validation gates", () => {
     });
   });
 
-  it("applies override when registry and advisory are valid", async () => {
+  it("applies an override into package.json only", async () => {
     await withFixture("npm-simple", async (dir) => {
       await writeFile(
         join(dir, ".supplywardenrc.json"),
@@ -661,7 +492,7 @@ describe("validation gates", () => {
       );
       const result = await runFix({
         cwd: dir,
-        alertPath: join(FIXTURES_ROOT, "alerts/ghsa-qs-high.json"),
+        audit: createStaticAudit([qs]),
         apply: true,
         skipInstall: true,
         registry: {
@@ -674,396 +505,33 @@ describe("validation gates", () => {
       const pkg = readPackageJson(dir);
       const ov = extractExistingOverrides(pkg);
       expect(ov.some((o) => o.package === "qs" && o.version === "6.11.2")).toBe(true);
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries[0].status).toBe("active");
-      expect(meta.entries[0].reason).toMatch(/root package/);
+      expect(ov.filter((o) => o.package === "qs").every((o) => o.scope.type === "scoped")).toBe(
+        true,
+      );
+      expect(existsSync(join(dir, "security-metadata.json"))).toBe(false);
     });
   });
 });
 
-describe("doctor / html / sync", () => {
+describe("doctor / html", () => {
   it("runs doctor against a fixture", () => {
     const result = runDoctor({ cwd: fixtureDir("npm-simple") });
     expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).not.toMatch(/security-metadata/);
   });
 
-  it("renders HTML with removable section and chains", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-removable"), enableAudit: false });
-    const html = renderHtml(result.report);
-    expect(html).toContain("supplywarden-data");
-    expect(html).toContain("qs");
-    expect(html).toMatch(/Safe to remove|no-vulnerable-version/);
-    expect(html).toMatch(/supplywarden verify qs --apply/);
-    expect(JSON.stringify(result.report.entries[0])).toMatch(/roots|express/);
-  });
-
-  it("renders the compact HTML template selected in config", async () => {
-    await withFixture("npm-removable", async (dir) => {
-      await writeFile(
-        join(dir, ".supplywardenrc.json"),
-        JSON.stringify({ htmlTemplate: "compact" }),
-      );
-      const result = await runCheck({ cwd: dir, enableAudit: false });
-      const html = renderHtml(result.report);
-      expect(html).toContain("supplywarden · compact");
-      expect(html).toContain("Safe to remove");
-      expect(html).toContain("supplywarden verify qs --apply");
-      expect(html).not.toContain("<!--SUPPLYWARDEN_DATA-->");
-    });
-  });
-
-  it("renders a custom HTML template relative to the project", async () => {
-    await withFixture("npm-simple", async (dir) => {
-      await writeFile(
-        join(dir, "my-report.html"),
-        "<!doctype html><title>Mine</title><script id=\"data\"><!--SUPPLYWARDEN_DATA--></script>",
-      );
-      await writeFile(
-        join(dir, ".supplywardenrc.json"),
-        JSON.stringify({ htmlTemplate: "my-report.html" }),
-      );
-      const result = await runCheck({ cwd: dir, enableAudit: false });
-      const html = renderHtml(result.report);
-      expect(html).toContain("<title>Mine</title>");
-      expect(html).toContain('"entries":[]');
-      expect(html).not.toContain("<!--SUPPLYWARDEN_DATA-->");
-    });
-  });
-
-  it("HTML actions use verify <pkg>, not check --apply", async () => {
-    const result = await runCheck({ cwd: fixtureDir("npm-mixed"), enableAudit: false });
-    const html = renderHtml(result.report);
-    const json = html.match(/id="supplywarden-data">([^<]*)/)?.[1];
-    expect(json).toBeTruthy();
-    const data = JSON.parse(json!);
-    const actions = data.entries.map((e: { commands?: string[]; suggestedAction: string }) =>
-      [...(e.commands ?? []), e.suggestedAction].join(" "),
-    );
-    expect(actions.join("\n")).not.toMatch(/check --apply/);
-    expect(actions.some((a: string) => a.includes("supplywarden verify lodash --apply"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("supplywarden verify request --apply"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("npm install"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("supplywarden verify tar"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("supplywarden why qs"))).toBe(true);
-    expect(html).toMatch(/Decide this week/);
-    expect(html).toMatch(/tracked: 'Tracked'/);
-    expect(html).toMatch(/data-queue/);
-    expect(html).toMatch(/function severity/);
-    const picomatch = data.entries.find((e: { entry: { package: string } }) => e.entry.package === "picomatch");
-    expect(picomatch?.dependencyKind).toBe("development");
-    const md = toMarkdown(result.report);
-    expect(md).toMatch(/\| Package \| Status \| Scope \|/);
-    expect(md).toMatch(/picomatch@4\.0\.4 · development \| OVERDUE \| development \|/);
-    expect(md).toMatch(/qs@6\.11\.2 \| OVERDUE \| production \|/);
-    expect(md).toMatch(/fsevents@2\.3\.3 · optional \| OK \| optional \|/);
-    expect(md).toMatch(/follow-redirects@1\.15\.6 \| OK · verified /);
-    expect(actions.some((a: string) => a.includes("supplywarden sync"))).toBe(true);
-    expect(actions.some((a: string) => a.includes("supplywarden init"))).toBe(true);
-    expect(html).toMatch(/function links/);
-    expect(html).toMatch(/https:\/\/github.com\/advisories\//);
-    expect(JSON.stringify(picomatch)).toMatch(/GHSA-c2c7-rcm5-vvqj/);
-  });
-
-  it("sync restores drifted overrides", async () => {
-    await withFixture("npm-drift", async (dir) => {
-      const result = runSync({ cwd: dir });
-      expect(result.exitCode).toBe(0);
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides).toMatchObject({ qs: "6.11.2" });
-    });
-  });
-
-  it("reads legacy .vulnfixrc.json and doctor warns", async () => {
-    await withFixture("npm-simple", async (dir) => {
-      await writeFile(join(dir, ".vulnfixrc.json"), JSON.stringify({ upgradeRootThreshold: 0 }));
-      const doctor = runDoctor({ cwd: dir });
-      expect(doctor.messages.join("\n")).toMatch(/legacy config/);
-      const result = await runFix({
-        cwd: dir,
-        alertPath: join(FIXTURES_ROOT, "alerts/ghsa-qs-high.json"),
-        apply: false,
-      });
-      expect(result.report.decision?.strategy).toBe("override");
-    });
-  });
-});
-
-describe("runVerify", () => {
-  it("confirms removable when audit is clear", async () => {
-    await withFixture("npm-removable", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        skipInstall: true,
-        audit: createStaticAudit([]),
-        install: createStaticInstall(),
-      });
-      expect(result.report.entries[0]!.verifyOutcome).toBe("CONFIRMED_REMOVABLE");
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides).toMatchObject({ qs: "6.11.2" });
-    });
-  });
-
-  it("keeps override when audit still reports the package", async () => {
-    await withFixture("npm-removable", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        skipInstall: true,
-        audit: createStaticAudit([
-          { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
-        ]),
-        install: createStaticInstall(),
-        registry: createOfflineRegistry(),
-      });
-      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries[0].status).toBe("active");
-      expect(meta.entries[0].resolution).toMatch(/^verify-keep:/);
-      expect(meta.entries[0].resolvedAt).toBeTruthy();
-      expect(meta.entries[0].resolvedBy).toBeTruthy();
-      const resolved = new Date(meta.entries[0].resolvedAt).getTime();
-      const reviewBy = new Date(meta.entries[0].reviewBy).getTime();
-      expect(reviewBy - resolved).toBeGreaterThanOrEqual(6 * 86_400_000);
-    });
-  });
-
-  it("apply drops confirmed overrides", async () => {
-    await withFixture("npm-removable", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        apply: true,
-        skipInstall: true,
-        audit: createStaticAudit([]),
-        install: createStaticInstall(),
-      });
-      expect(result.exitCode).toBe(0);
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries[0].status).toBe("resolved");
-      expect(meta.entries[0].resolvedAt).toBeTruthy();
-      expect(meta.entries[0].resolvedBy).toBeTruthy();
-      expect(meta.entries[0].resolution).toMatch(/^verify-confirmed:/);
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides).toBeUndefined();
-    });
-  });
-
-  it("drops leftover REMOVABLE from check without requiring npm install", async () => {
-    await withFixture("npm-mixed", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        apply: true,
-        audit: createStaticAudit([]),
-        install: createStaticInstall(
-          false,
-          "npm error code EOVERRIDE\nnpm error Override for semver@7.5.1 conflicts with direct dependency",
-        ),
-      });
-      expect(result.exitCode).toBe(0);
-      expect(result.messages.join("\n")).toMatch(/CONFIRMED_REMOVABLE/);
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides?.lodash).toBeUndefined();
-      expect(pkg.overrides?.request).toBeUndefined();
-      expect(pkg.overrides?.qs).toBe("6.11.2");
-    });
-  });
-
-  it("keeps override when install fails", async () => {
-    await withFixture("npm-removable", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        audit: createStaticAudit([]),
-        install: createStaticInstall(false, "peer conflict"),
-      });
-      expect(result.exitCode).toBe(1);
-      expect(result.report.entries[0]!.verifyOutcome).toBe("VERIFY_FAILED");
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides).toMatchObject({ qs: "6.11.2" });
-      const meta = JSON.parse(await readFile(join(dir, "security-metadata.json"), "utf8"));
-      expect(meta.entries[0].status).toBe("verify_failed");
-      expect(meta.entries[0].resolvedAt).toBeTruthy();
-      expect(meta.entries[0].resolution).toMatch(/verify-failed/);
-      expect(meta.entries[0].resolution).toMatch(/peer conflict/);
-    });
-  });
-
-  it("probes only the named package", async () => {
-    await withFixture("npm-mixed", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        package: "lodash",
-        apply: true,
-        skipInstall: true,
-        audit: createStaticAudit([]),
-        install: createStaticInstall(),
-      });
-      expect(result.exitCode).toBe(0);
-      expect(result.report.entries).toHaveLength(1);
-      expect(result.report.entries[0]!.entry.package).toBe("lodash");
-      expect(result.report.entries[0]!.verifyOutcome).toBe("CONFIRMED_REMOVABLE");
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides?.lodash).toBeUndefined();
-      expect(pkg.overrides?.request).toBe("2.88.2");
-    });
-  });
-
-  it("probes a named override even when check has not marked it REMOVABLE", async () => {
-    await withFixture("npm-mixed", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        package: "qs",
-        skipInstall: true,
-        audit: createStaticAudit([]),
-        install: createStaticInstall(),
-      });
-      expect(result.report.entries).toHaveLength(1);
-      expect(result.report.entries[0]!.entry.package).toBe("qs");
-      expect(result.report.entries[0]!.verifyOutcome).toBe("CONFIRMED_REMOVABLE");
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides?.qs).toBe("6.11.2");
-    });
-  });
-
-  it("records KEEP so the next check shows verified date instead of overdue", async () => {
-    await withFixture("npm-mixed", async (dir) => {
-      const before = await runCheck({ cwd: dir, enableAudit: false });
-      expect(before.report.entries.find((e) => e.entry.package === "picomatch")?.status).toBe(
-        "OVERDUE",
-      );
-      const result = await runVerify({
-        cwd: dir,
-        package: "picomatch",
-        skipInstall: true,
-        audit: createStaticAudit([
-          { package: "picomatch", severity: "high", range: "< 4.0.3", ghsaId: "GHSA-c2c7-rcm5-vvqj" },
-        ]),
-        install: createStaticInstall(),
-        registry: createOfflineRegistry(),
-      });
-      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
-      const after = await runCheck({ cwd: dir, enableAudit: false });
-      const picomatch = after.report.entries.find((e) => e.entry.package === "picomatch");
-      expect(picomatch?.status).toBe("OK");
-      expect(picomatch?.statuses).not.toContain("OVERDUE");
-      expect(picomatch?.entry.resolution).toMatch(/^verify-keep:/);
-      const html = renderHtml(after.report);
-      expect(html).toMatch(/verified /);
-      expect(toMarkdown(after.report)).toMatch(/verified /);
-    });
-  });
-
-  it("keeps override when audit fails and lockfile still matches stored advisories", async () => {
-    await withFixture("npm-mixed", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        package: "qs",
-        skipInstall: true,
-        audit: createStaticAudit([], "npm audit failed"),
-        install: createStaticInstall(),
-        registry: createOfflineRegistry(),
-      });
-      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
-    });
-  });
-
-  it("exits 1 when the named package has no override", async () => {
-    await withFixture("npm-mixed", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        package: "left-pad",
-        skipInstall: true,
-        audit: createStaticAudit([]),
-        install: createStaticInstall(),
-      });
-      expect(result.exitCode).toBe(1);
-      expect(result.messages.join("\n")).toMatch(/no override for left-pad/);
-    });
-  });
-
-  const expressQsRegistry = createOfflineRegistry(
-    {
-      express: ["4.18.2", "4.18.3", "4.21.2"],
-      qs: ["6.5.0", "6.11.2"],
-    },
-    {
-      express: {
-        "4.18.3": { qs: "6.5.0" },
-        "4.21.2": { qs: "^6.11.2" },
-      },
-    },
-  );
-
-  it("KEEP with few roots suggests a proven root upgrade like check", async () => {
-    await withFixture("npm-overdue", async (dir) => {
-      const result = await runVerify({
-        cwd: dir,
-        package: "qs",
-        skipInstall: true,
-        audit: createStaticAudit([
-          { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
-        ]),
-        install: createStaticInstall(),
-        registry: expressQsRegistry,
-      });
-      const entry = result.report.entries[0]!;
-      expect(entry.verifyOutcome).toBe("KEEP");
-      expect(entry.decision?.strategy).toBe("upgrade");
-      expect(entry.decision?.upgradeTargets).toEqual([
-        { name: "express", from: "4.18.2", to: "4.21.2", skipped: ["4.18.3"] },
-      ]);
-      expect(entry.upgradeCommands).toEqual(["npm install express@4.21.2"]);
-      expect(entry.suggestedAction).toMatch(/npm install express@4\.21\.2/);
-      expect(result.messages.join("\n")).toMatch(/UPGRADE express@4\.18\.2 → 4\.21\.2/);
-    });
-  });
-
-  it("KEEP stays override when roots exceed upgradeRootThreshold", async () => {
-    await withFixture("npm-overdue", async (dir) => {
-      await writeFile(join(dir, ".supplywardenrc.json"), JSON.stringify({ upgradeRootThreshold: 0 }));
-      const result = await runVerify({
-        cwd: dir,
-        package: "qs",
-        skipInstall: true,
-        audit: createStaticAudit([
-          { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
-        ]),
-        install: createStaticInstall(),
-        registry: expressQsRegistry,
-      });
-      expect(result.report.entries[0]!.decision?.strategy).toBe("override");
-      expect(result.report.entries[0]!.upgradeCommands).toBeUndefined();
-      expect(result.messages.join("\n")).not.toMatch(/UPGRADE/);
-    });
-  });
-
-  it("verify --apply runs the KEEP upgrade when autoApplyRootUpgrade is on", async () => {
-    await withFixture("npm-overdue", async (dir) => {
-      await writeFile(
-        join(dir, ".supplywardenrc.json"),
-        JSON.stringify({ autoApplyRootUpgrade: true }),
-      );
-      const calls: string[] = [];
-      const result = await runVerify({
-        cwd: dir,
-        package: "qs",
-        apply: true,
-        audit: createStaticAudit([
-          { package: "qs", severity: "high", range: "< 6.11.0", ghsaId: "GHSA-qs-high" },
-        ]),
-        install: {
-          async install() {
-            return { ok: true };
-          },
-          async runCommand(_cwd, file, args) {
-            calls.push(`${file} ${args.join(" ")}`);
-            return { ok: true };
-          },
+  it("renders an action list", async () => {
+    const result = await runCheck({
+      cwd: fixtureDir("npm-simple"),
+      audit: createStaticAudit([qs]),
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
         },
-        registry: expressQsRegistry,
-      });
-      expect(result.report.entries[0]!.verifyOutcome).toBe("KEEP");
-      expect(calls).toEqual(["npm install express@4.21.2"]);
-      expect(result.messages.join("\n")).toMatch(/Ran `npm install express@4\.21\.2`/);
-      const pkg = readPackageJson(dir);
-      expect(pkg.overrides).toMatchObject({ qs: "6.11.2" });
+      },
     });
+    const html = renderHtml(result.report);
+    expect(html).toMatch(/supplywarden-data/);
+    expect(html).toMatch(/"package":"qs"/);
   });
 });

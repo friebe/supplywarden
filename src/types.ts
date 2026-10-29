@@ -1,35 +1,8 @@
 export type Severity = "critical" | "high" | "medium" | "low" | "unknown";
 
-export type Strategy = "override" | "upgrade" | "wait" | "defer";
+export type Strategy = "override" | "upgrade" | "wait";
 
-export type EntryStatus =
-  | "active"
-  | "pending_verify"
-  | "verify_failed"
-  | "resolved"
-  | "superseded";
-
-export type RemovableReason =
-  | "not-in-tree"
-  | "no-vulnerable-version"
-  | "already-at-patched"
-  | "root-upgrade-candidate"
-  | "audit-clear";
-
-export type VerifyOutcome = "KEEP" | "CONFIRMED_REMOVABLE" | "VERIFY_FAILED";
-
-export type CheckStatus =
-  | "OK"
-  | "NEW"
-  | "UNTRACKED"
-  | "REMOVABLE"
-  | "RESOLVED"
-  | "OVERDUE"
-  | "DRIFT"
-  | "STALE"
-  | "PENDING_VERIFY"
-  | "VERIFY_FAILED"
-  | "DEFERRED";
+export type Action = "upgrade" | "override" | "wait" | "keep" | "drop";
 
 export type ValidationCode =
   | "VERSION_NOT_FOUND"
@@ -49,69 +22,39 @@ export type PackageManager = "npm" | "pnpm" | "yarn";
 export type Advisory = {
   ghsaId?: string;
   cveId?: string;
+  /** npm audit title, when the audit named one. */
+  title?: string;
   severity: Severity;
   vulnerableRange: string;
   patchedVersion?: string;
 };
 
-export type OverrideScope =
-  | { type: "global" }
-  | { type: "scoped"; parent: string };
-
-export type MetadataEntry = {
-  id: string;
-  status: EntryStatus;
-  package: string;
-  forcedVersion: string;
-  scope: OverrideScope;
-  advisories: Advisory[];
-  reason: string;
-  strategy: Strategy;
-  rootPackages: string[];
-  dependencyChains: string[];
-  packageManager: PackageManager;
-  manifestPath: string;
-  createdAt: string;
-  createdBy: string;
-  reviewBy: string;
-  reviewReason: string;
-  needsReview?: boolean;
-  resolvedAt?: string | null;
-  resolvedBy?: string | null;
-  resolution?: string | null;
-};
-
-export type SecurityMetadata = {
-  $schema?: string;
-  version: 1;
-  entries: MetadataEntry[];
-};
+export type OverrideScope = { type: "global" } | { type: "scoped"; parent: string };
 
 export type AuditConfig = {
   /** Ignore audit findings below this severity. */
   minSeverity: Severity;
 };
 
-export type DateLocale = "de" | "en";
-
 export type SupplywardenConfig = {
   upgradeRootThreshold: number;
   /** When true, `fix --apply` runs the suggested root upgrade (`npm install` / `pnpm add` / `nx migrate`). Default: suggest only. */
   autoApplyRootUpgrade: boolean;
-  defaultReviewDays: number;
-  metadataPath: string;
+  /** When true, pin a development or optional dependency a root upgrade cannot close. Default: true. */
+  pinDevelopment: boolean;
   /** Built-in `default` / `compact`, or an HTML file relative to the project root. */
   htmlTemplate: string;
   audit: AuditConfig;
-  /** CLI/HTML date display. Metadata stays ISO. */
-  dateLocale: DateLocale;
-  timeZone: string;
 };
 
 export type RootPackage = {
   name: string;
   version: string;
   range?: string;
+  /** Workspace package that declared this root. Omitted for the workspace root. */
+  importer?: string;
+  /** `default` for `catalog:`, otherwise the named catalog. */
+  catalog?: string;
 };
 
 export type DependencyKind = "production" | "development" | "optional";
@@ -120,6 +63,15 @@ export type DependencyChain = {
   path: string[];
   package: string;
   version: string;
+  /** Workspace package that owns this chain. Omitted outside a pnpm workspace. */
+  importer?: string;
+};
+
+/** An installed package whose dependency range names this package. */
+export type Depender = {
+  parent: string;
+  range: string;
+  version?: string;
 };
 
 export type GraphAnalysis = {
@@ -130,6 +82,10 @@ export type GraphAnalysis = {
   chains: DependencyChain[];
   /** Parent lockfile specs for this package (what dependents asked for, not installed). */
   dependerRanges: string[];
+  /** Who asked for those specs. Omitted by callers that only need the ranges. */
+  dependers?: Depender[];
+  /** Direct dependencies of the project, with the version the lockfile installed. */
+  directs?: Array<{ name: string; version: string }>;
   /** Where this package sits in the install tree. Omitted if not in the lockfile. */
   dependencyKind?: DependencyKind;
 };
@@ -142,8 +98,6 @@ export type PackageAlertGroup = {
   maxSeverity: Severity;
   forcedVersion?: string;
   mergedVulnerableRange: string;
-  /** From Dependabot `dependency.scope` when present. */
-  dependencyKind?: DependencyKind;
 };
 
 export type UpgradeTarget = {
@@ -152,6 +106,10 @@ export type UpgradeTarget = {
   to?: string;
   /** Newer versions tried before `to` that still allow the vuln (e.g. 23.2.1). */
   skipped?: string[];
+  /** `pnpm --filter` package name. Omitted for the workspace root and for npm/yarn. */
+  filter?: string;
+  /** Catalog name when this root is declared as `catalog:`. */
+  catalog?: string;
 };
 
 export type Decision = {
@@ -159,6 +117,8 @@ export type Decision = {
   reason: string;
   forcedVersion?: string;
   scope: OverrideScope;
+  /** Every override to write. One scoped entry per parent, or a single global pin. */
+  scopes?: OverrideScope[];
   upgradeTargets?: UpgradeTarget[];
 };
 
@@ -169,33 +129,31 @@ export type ValidationIssue = {
   blocking: boolean;
 };
 
-export type CheckEntry = {
-  entry: MetadataEntry;
-  status: CheckStatus;
-  statuses: CheckStatus[];
-  suggestedAction: string;
-  /** Canonical CLI to copy from the HTML report (derived from status, not prose). */
-  commands?: string[];
-  /** Copy-paste root upgrade (`npm install pkg@next`, and/or `npx nx migrate` if a root is `nx`). */
-  upgradeCommand?: string;
-  /** All root-upgrade CLIs when nx and a normal package are mixed (HTML copy buttons). */
-  upgradeCommands?: string[];
-  issues: ValidationIssue[];
-  removableReason?: RemovableReason;
-  roots?: string[];
-  chains?: string[];
-  installedVersions?: string[];
-  dependerRanges?: string[];
-  /** production | development | optional. Reports show all three in the Scope column. */
+/** A vulnerable copy: the install path, and the range the parent asked for. */
+export type FindingTrail = {
+  path: string;
+  range?: string;
+};
+
+/** One transitive finding or leftover override, computed for this run. Nothing is stored. */
+export type Finding = {
+  package: string;
+  severity: Severity;
+  advisories: Advisory[];
+  installed: string[];
+  roots: string[];
+  chains: string[];
+  /** Paths that still reach a vulnerable copy. Safe copies stay out of Via. */
+  trails?: FindingTrail[];
   dependencyKind?: DependencyKind;
-  /** Override spec still allows vulnerable versions — keeping it is a no-op. */
-  weakOverride?: boolean;
-  /** Live audit does not list this package. Parent specs are a hint, not a KEEP. */
-  auditClear?: boolean;
-  /** Last verify KEEP: "verified 17.09.2026, 11:35 jan" for HTML/markdown. */
-  verifiedNote?: string;
-  verifyOutcome?: VerifyOutcome;
-  decision?: Decision;
+  action: Action;
+  summary: string;
+  /** What the audit says is wrong, including the range and the patched version. */
+  advisory?: string;
+  commands: string[];
+  forcedVersion?: string;
+  upgradeTargets?: UpgradeTarget[];
+  outcome?: "keep" | "removable" | "failed";
 };
 
 export type ReportModel = {
@@ -203,13 +161,10 @@ export type ReportModel = {
   generatedAt: string;
   cwd: string;
   summary: Record<string, number | string>;
-  entries: CheckEntry[];
+  entries: Finding[];
   groups?: PackageAlertGroup[];
   decision?: Decision;
   validation?: ValidationIssue[];
-  markdown?: string;
-  dateLocale?: DateLocale;
-  timeZone?: string;
 };
 
 export type CommandResult = {
@@ -226,20 +181,16 @@ export type RegistryClient = {
   ) => Promise<{ exists: boolean; deprecated?: string | null }>;
   /** Latest published version, or undefined if lookup failed. */
   latestVersion?: (pkg: string) => Promise<string | undefined>;
-  getLatestMatching?: (
-    pkg: string,
-    range: string,
-  ) => Promise<string | undefined>;
+  getLatestMatching?: (pkg: string, range: string) => Promise<string | undefined>;
   /** Published versions newer than `from`, ascending, excluding deprecated. `undefined` if lookup failed. */
   versionsNewerThan?: (pkg: string, from: string) => Promise<string[] | undefined>;
   /** Declared range for `dep` in `pkg@version` (dependencies / optionalDependencies). */
   dependencyRange?: (pkg: string, version: string, dep: string) => Promise<string | undefined>;
   /** Lowest published version that satisfies `range`. */
   minMatching?: (pkg: string, range: string) => Promise<string | undefined>;
-  advisoriesFor?: (
-    pkg: string,
-    version: string,
-  ) => Promise<Advisory[]>;
+  /** Peer ranges declared by `pkg@version`. `undefined` when that version was not found. */
+  peerDependencies?: (pkg: string, version: string) => Promise<Record<string, string> | undefined>;
+  advisoriesFor?: (pkg: string, version: string) => Promise<Advisory[]>;
 };
 
 export type AuditFinding = {
@@ -263,5 +214,9 @@ export type AuditClient = {
 
 export type InstallClient = {
   install: (cwd: string) => Promise<{ ok: boolean; error?: string }>;
-  runCommand?: (cwd: string, file: string, args: string[]) => Promise<{ ok: boolean; error?: string }>;
+  runCommand?: (
+    cwd: string,
+    file: string,
+    args: string[],
+  ) => Promise<{ ok: boolean; error?: string }>;
 };

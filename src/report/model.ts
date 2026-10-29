@@ -1,11 +1,5 @@
-import type { CheckEntry, ReportModel } from "../types.js";
-import { removableReasonLabel, sortCheckEntries } from "../check/classify.js";
-import { nextCommands, withReportCommands } from "./commands.js";
-import { formatUpgradeTarget, formatUpgradeTargets } from "../decision/engine.js";
+import type { Advisory, Finding, ReportModel } from "../types.js";
 import { formatDisplayDate, nowIso } from "../util/time.js";
-import { loadConfig } from "../config.js";
-import { dependencyKindLabel } from "../graph/npm.js";
-import { formatVerifiedKeep } from "./verified.js";
 
 export function emptyReport(cwd: string, title: string): ReportModel {
   return {
@@ -17,19 +11,9 @@ export function emptyReport(cwd: string, title: string): ReportModel {
   };
 }
 
-function ghsaList(entry: CheckEntry): string {
-  return entry.entry.advisories.map((a) => a.ghsaId).filter(Boolean).join(", ") || "—";
-}
-
-function canRemove(e: CheckEntry): boolean {
-  if (e.verifyOutcome === "KEEP" || e.verifyOutcome === "VERIFY_FAILED") return false;
-  return e.statuses.includes("REMOVABLE") || e.statuses.includes("RESOLVED");
-}
-
 export function toMarkdown(report: ReportModel): string {
-  const dateOpts = dateOptsFrom(report);
   const lines: string[] = [`# ${report.title}`, ""];
-  lines.push(`Generated: ${formatDisplayDate(report.generatedAt, dateOpts)}`, "");
+  lines.push(`Generated: ${formatDisplayDate(report.generatedAt)}`, "");
   const summary = Object.entries(report.summary)
     .map(([k, v]) => `**${k}:** ${v}`)
     .join(" · ");
@@ -42,17 +26,13 @@ export function toMarkdown(report: ReportModel): string {
 
   if (report.groups?.length) {
     for (const group of report.groups) {
-      lines.push(`## ${group.package} – ${group.advisories.length} Advisories (max: ${group.maxSeverity.toUpperCase()})`, "");
-      lines.push("| GHSA | Severity | Vulnerable | Patched |", "|------|----------|------------|---------|");
+      lines.push(`## ${group.package}`, "");
       for (const a of group.advisories) {
         lines.push(
-          `| ${a.ghsaId ?? "—"} | ${a.severity} | ${a.vulnerableRange} | ${a.patchedVersion ?? "—"} |`,
+          `- ${a.ghsaId ?? "—"} ${a.severity} ${a.vulnerableRange} patched ${a.patchedVersion ?? "—"}`,
         );
       }
-      lines.push("", `**forcedVersion:** ${group.forcedVersion ?? "—"}`, "");
-      if (group.dependencyKind && group.dependencyKind !== "production") {
-        lines.push(`**Tree:** ${group.dependencyKind} only`, "");
-      }
+      lines.push("");
     }
   }
 
@@ -64,112 +44,66 @@ export function toMarkdown(report: ReportModel): string {
     lines.push("");
   }
 
-  const entries = sortCheckEntries(report.entries).map(withReportCommands);
-  const news = entries.filter((e) => e.status === "NEW" || e.statuses.includes("NEW"));
-  if (news.length) {
-    lines.push("## New", "");
-    for (const e of news) {
-      const installed = e.installedVersions?.join(", ") || "—";
-      lines.push(`- **${e.entry.package}** (lockfile ${installed})`);
-      if (e.decision?.strategy === "upgrade") {
-        const targets = (e.decision.upgradeTargets ?? []).filter((t) => t.to);
-        for (const t of targets) {
-          lines.push(`  - ${formatUpgradeTarget(t)}`);
-        }
-        if (!targets.length) {
-          const bump = formatUpgradeTargets(e.decision);
-          if (bump) lines.push(`  - ${bump}`);
-        }
-      } else if (e.decision?.strategy === "wait") {
-        lines.push("  - WAIT — no override/upgrade this cycle");
-      } else {
-        lines.push(`  - OVERRIDE ${e.entry.package}@${e.decision?.forcedVersion ?? e.entry.forcedVersion}`);
-      }
-      for (const c of e.commands ?? nextCommands(e)) {
-        lines.push(`  - \`${c}\``);
-      }
-    }
-    lines.push("");
-  }
-  const deferred = entries.filter(
-    (e) => e.statuses.includes("DEFERRED") && !e.statuses.includes("NEW"),
-  );
-  if (deferred.length) {
-    lines.push("## Seen, not applied", "");
-    for (const e of deferred) {
-      lines.push(`- **${e.entry.package}**: ${e.suggestedAction}`);
-    }
-    lines.push("");
-  }
-  const removable = entries.filter(canRemove);
-  if (removable.length) {
-    lines.push("## Safe to remove", "");
-    lines.push(
-      "| Package | Status | Reason | GHSA | Forced |",
-      "|---------|--------|------------|------|--------|",
-    );
-    for (const e of removable) {
-      lines.push(
-        `| ${e.entry.package}@${e.entry.forcedVersion} | ${e.statuses.join(" + ")} | ${removableReasonLabel(e.removableReason)} | ${ghsaList(e)} | ${e.entry.forcedVersion} |`,
-      );
-    }
-    lines.push("");
-  }
-
-  if (entries.length) {
-    lines.push(
-      "| Package | Status | Scope | Recommendation | Review by |",
-      "|---------|--------|-------|----------------|-----------|",
-    );
-    for (const e of entries) {
-      const verify = e.verifyOutcome ? ` (${e.verifyOutcome})` : "";
-      const extra = dependencyKindLabel(e.dependencyKind);
-      const extraMark = extra ? ` · ${extra}` : "";
-      const scope = e.dependencyKind ?? "—";
-      const cmd = (e.commands ?? nextCommands(e)).map((c) => `\`${c}\``).join(" · ");
-      const upgrade = formatUpgradeTargets(e.decision);
-      const rec = [upgrade, cmd || e.suggestedAction].filter(Boolean).join(" · ");
-      const verified = e.verifiedNote ?? formatVerifiedKeep(e.entry, dateOpts);
-      const verifiedMark = verified ? ` · ${verified}` : "";
-      lines.push(
-        `| ${e.entry.package}@${e.entry.forcedVersion}${extraMark} | ${e.statuses.join(" + ")}${verify}${verifiedMark} | ${scope} | ${rec} | ${formatDisplayDate(e.entry.reviewBy, dateOpts)} |`,
-      );
-    }
-    lines.push("");
-  }
-
-  const withChains = entries.filter(
-    (e) => (e.roots?.length ?? 0) > 0 || (e.chains?.length ?? 0) > 0 || (e.installedVersions?.length ?? 0) > 0,
-  );
-  if (withChains.length) {
-    lines.push("## Dependency chains", "");
-    for (const e of withChains) {
-      const installed = e.installedVersions?.join(", ") || "—";
-      lines.push(`### ${e.entry.package}@${e.entry.forcedVersion}`, "");
-      lines.push(`- **Lockfile:** ${installed} (forced: ${e.entry.forcedVersion})`);
-      if (e.dependerRanges?.length) {
-        lines.push(
-          `- **Dependents asked for (lockfile specs, not installed):** ${e.dependerRanges.join(", ")}`,
-        );
-      }
-      lines.push(`- **Roots:** ${e.roots?.join(", ") || "—"}`);
-      if (e.dependencyKind && e.dependencyKind !== "production") {
-        lines.push(`- **Tree:** ${e.dependencyKind} only`);
-      }
-      for (const chain of e.chains ?? []) {
-        lines.push(`- ${chain}`);
-      }
-      lines.push("");
-    }
+  if (report.entries.length) {
+    lines.push("## What to do", "");
+    for (const e of report.entries) lines.push(formatFinding(e), "");
   }
 
   return lines.join("\n");
 }
 
-function dateOptsFrom(report: ReportModel): { dateLocale: "de" | "en"; timeZone: string } {
-  const config = report.cwd ? loadConfig(report.cwd) : undefined;
-  return {
-    dateLocale: report.dateLocale ?? config?.dateLocale ?? "de",
-    timeZone: report.timeZone ?? config?.timeZone ?? "Europe/Berlin",
-  };
+function advisoryHref(advisory: Advisory): string | undefined {
+  if (advisory.cveId) return `https://nvd.nist.gov/vuln/detail/${advisory.cveId}`;
+  if (advisory.ghsaId) return `https://github.com/advisories/${advisory.ghsaId}`;
+  return undefined;
+}
+
+/** Link to the CVE, or the GitHub advisory when no CVE is named. */
+export function advisoryBrief(advisories: Advisory[]): string {
+  const seen = new Set<string>();
+  const hrefs: string[] = [];
+  for (const advisory of advisories) {
+    const href = advisoryHref(advisory);
+    const id = advisory.cveId || advisory.ghsaId;
+    if (!href || !id || seen.has(id)) continue;
+    seen.add(id);
+    hrefs.push(href);
+  }
+  return hrefs.join(" ");
+}
+
+/** A direct dependency can move to the advisory's patched version without a registry proof. */
+export function withDirectPatch(
+  pkg: string,
+  forced: string | undefined,
+  targets: Array<{ name: string; from?: string; to?: string; skipped?: string[] }>,
+) {
+  if (!forced) return targets;
+  return targets.map((target) =>
+    !target.to && target.name === pkg ? { ...target, to: forced } : target,
+  );
+}
+
+export function findingLines(e: Finding): string[] {
+  const severity = e.severity !== "unknown" ? `, ${e.severity}` : "";
+  const via = e.roots.length ? `, via ${e.roots.join(", ")}` : "";
+  const lines = [`${e.package}${severity}${via}`];
+  for (const trail of e.trails ?? []) {
+    if (!trail.path.includes("→") && !trail.range) continue;
+    const range = trail.range ? ` asks for ${e.package}@${trail.range}` : "";
+    lines.push(`${trail.path}${range}`);
+  }
+  for (const command of e.commands) lines.push(command);
+  if (e.advisory) lines.push(e.advisory);
+  if (e.summary) lines.push(e.summary);
+  return lines;
+}
+
+function formatFinding(e: Finding): string {
+  const [headline, ...rest] = findingLines(e);
+  const commands = new Set(e.commands);
+  return [
+    `- **${headline}**`,
+    ...rest.map((line) => (commands.has(line) ? `  - \`${line}\`` : `  - ${line}`)),
+  ].join("\n");
 }

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { applyFix } from "../../src/fix/apply.js";
 import { DEFAULT_CONFIG } from "../../src/config.js";
 import type { GraphAnalysis, PackageAlertGroup } from "../../src/types.js";
@@ -49,7 +49,7 @@ const graph: GraphAnalysis = {
   versions: ["1.3.0"],
   inTree: true,
   roots: [{ name: "nx", version: "23.3.0", range: "^23.3.0" }],
-  chains: [{ path: ["nx@23.3.0", "smol-toml@1.3.0"] }],
+  chains: [{ path: ["nx@23.3.0", "smol-toml@1.3.0"], package: "smol-toml", version: "1.3.0" }],
   dependerRanges: ["1.3.0"],
 };
 
@@ -173,7 +173,7 @@ describe("applyFix root upgrade", () => {
       versions: ["6.5.0"],
       inTree: true,
       roots: [{ name: "express", version: "4.18.2", range: "^4.18.2" }],
-      chains: [{ path: ["express@4.18.2", "qs@6.5.0"] }],
+      chains: [{ path: ["express@4.18.2", "qs@6.5.0"], package: "qs", version: "6.5.0" }],
       dependerRanges: ["6.5.0"],
     };
     const expressGroup: PackageAlertGroup = {
@@ -192,8 +192,19 @@ describe("applyFix root upgrade", () => {
       decision: expressDecision,
       apply: true,
       skipInstall: false,
-      registry: { async verifyPackageVersion() { return { exists: true, deprecated: null }; } },
-      install: { async install() { return { ok: true }; }, async runCommand() { return { ok: true }; } },
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+      install: {
+        async install() {
+          return { ok: true };
+        },
+        async runCommand() {
+          return { ok: true };
+        },
+      },
     });
     expect(suggested.exitCode).toBe(0);
     expect(suggested.messages.join("\n")).toMatch(/npm install express@4\.21\.2/);
@@ -208,10 +219,20 @@ describe("applyFix root upgrade", () => {
       decision: expressDecision,
       apply: true,
       skipInstall: false,
-      registry: { async verifyPackageVersion() { return { exists: true, deprecated: null }; } },
-      audit: { async audit() { return { vulnerabilities: [] }; } },
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+      audit: {
+        async audit() {
+          return { vulnerabilities: [] };
+        },
+      },
       install: {
-        async install() { return { ok: true }; },
+        async install() {
+          return { ok: true };
+        },
         async runCommand(_cwd, file, args) {
           calls.push({ file, args });
           return { ok: true };
@@ -238,8 +259,8 @@ describe("applyFix root upgrade", () => {
         { name: "lodash", version: "4.17.20", range: "^4.17.20" },
       ],
       chains: [
-        { path: ["nx@23.3.0", "smol-toml@1.3.0"] },
-        { path: ["lodash@4.17.20", "smol-toml@1.3.0"] },
+        { path: ["nx@23.3.0", "smol-toml@1.3.0"], package: "smol-toml", version: "1.3.0" },
+        { path: ["lodash@4.17.20", "smol-toml@1.3.0"], package: "smol-toml", version: "1.3.0" },
       ],
     };
     const suggested = await applyFix({
@@ -250,8 +271,19 @@ describe("applyFix root upgrade", () => {
       decision: mixed,
       apply: true,
       skipInstall: false,
-      registry: { async verifyPackageVersion() { return { exists: true, deprecated: null }; } },
-      install: { async install() { return { ok: true }; }, async runCommand() { return { ok: true }; } },
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+      install: {
+        async install() {
+          return { ok: true };
+        },
+        async runCommand() {
+          return { ok: true };
+        },
+      },
     });
     expect(suggested.exitCode).toBe(0);
     expect(suggested.messages.join("\n")).toMatch(/npm install lodash@4\.17\.21/);
@@ -267,9 +299,15 @@ describe("applyFix root upgrade", () => {
       decision: mixed,
       apply: true,
       skipInstall: false,
-      registry: { async verifyPackageVersion() { return { exists: true, deprecated: null }; } },
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
       install: {
-        async install() { return { ok: true }; },
+        async install() {
+          return { ok: true };
+        },
         async runCommand(_cwd, file, args) {
           calls.push({ file, args });
           return { ok: true };
@@ -283,7 +321,7 @@ describe("applyFix root upgrade", () => {
     ]);
   });
 
-  it("records wait in metadata and does not write an override", async () => {
+  it("prints wait and does not write an override or a metadata file", async () => {
     const cwd = await nxProject();
     const waitDecision = {
       strategy: "wait" as const,
@@ -291,17 +329,6 @@ describe("applyFix root upgrade", () => {
       forcedVersion: "1.4.2",
       scope: { type: "global" as const },
     };
-    const dry = await applyFix({
-      cwd,
-      config: DEFAULT_CONFIG,
-      group,
-      graph,
-      decision: waitDecision,
-      apply: false,
-    });
-    expect(dry.messages.join("\n")).toMatch(/WAIT/);
-    expect(existsSync(join(cwd, "security-metadata.json"))).toBe(false);
-
     const applied = await applyFix({
       cwd,
       config: DEFAULT_CONFIG,
@@ -311,13 +338,13 @@ describe("applyFix root upgrade", () => {
       apply: true,
     });
     expect(applied.exitCode).toBe(0);
-    expect(applied.writtenFiles).toEqual(["security-metadata.json"]);
-    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as { overrides?: unknown };
-    expect(pkg.overrides).toBeUndefined();
-    const meta = JSON.parse(await readFile(join(cwd, "security-metadata.json"), "utf8")) as {
-      entries: Array<{ strategy: string; status: string }>;
+    expect(applied.messages.join("\n")).toMatch(/WAIT/);
+    expect(applied.writtenFiles).toBeUndefined();
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
+      overrides?: unknown;
     };
-    expect(meta.entries[0]).toMatchObject({ strategy: "wait", status: "active" });
+    expect(pkg.overrides).toBeUndefined();
+    expect(existsSync(join(cwd, "security-metadata.json"))).toBe(false);
   });
 
   it("explains why a breaking major root upgrade writes no override", async () => {
@@ -344,7 +371,9 @@ describe("applyFix root upgrade", () => {
     expect(result.messages.join("\n")).toMatch(/No override written/);
     expect(result.messages.join("\n")).toMatch(/breaking major upgrade: nx@23\.3\.0 → 24\.0\.0/);
     expect(result.messages.join("\n")).toMatch(/package\.json was left unchanged/);
-    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as { overrides?: unknown };
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
+      overrides?: unknown;
+    };
     expect(pkg.overrides).toBeUndefined();
   });
 
@@ -387,5 +416,50 @@ describe("applyFix root upgrade", () => {
       overrides?: { "left-pad"?: string };
     };
     expect(pkg.overrides?.["left-pad"]).toBe("2.0.0");
+  });
+
+  it("still writes a pin that forces an older major, and only warns", async () => {
+    const cwd = await nxProject();
+    const pinDecision = {
+      strategy: "override" as const,
+      reason: "no proven root upgrade",
+      forcedVersion: "7.30.1",
+      scope: { type: "global" as const },
+    };
+    const pinGroup: PackageAlertGroup = {
+      ...group,
+      package: "undici",
+      forcedVersion: "7.30.1",
+      advisories: [
+        { severity: "high", vulnerableRange: ">= 8.0.0 < 8.21.1", patchedVersion: "7.30.1" },
+      ],
+    };
+    const pinGraph: GraphAnalysis = {
+      ...graph,
+      package: "undici",
+      versions: ["8.21.0"],
+    };
+    const result = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group: pinGroup,
+      graph: pinGraph,
+      decision: pinDecision,
+      apply: true,
+      skipInstall: true,
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(
+      /Breaking major pin: undici@8\.21\.0 → 7\.30\.1\. Forcing an older major can break\./,
+    );
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
+      overrides?: { undici?: string };
+    };
+    expect(pkg.overrides?.undici).toBe("7.30.1");
   });
 });

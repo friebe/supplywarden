@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isNxCli, rootUpgradeCommand, rootUpgradeCommands } from "../../src/fix/upgrade-command.js";
 
 describe("rootUpgradeCommand", () => {
@@ -9,9 +9,9 @@ describe("rootUpgradeCommand", () => {
       display: "npm install express@4.21.2",
       kind: "install",
     });
-    expect(rootUpgradeCommand("pnpm", [{ name: "express", from: "4.18.2", to: "4.21.2" }])?.display).toBe(
-      "pnpm add express@4.21.2",
-    );
+    expect(
+      rootUpgradeCommand("pnpm", [{ name: "express", from: "4.18.2", to: "4.21.2" }])?.display,
+    ).toBe("pnpm add express@4.21.2");
     expect(rootUpgradeCommand("yarn", [{ name: "@nx/js", from: "23.3.0", to: "23.4.1" }])).toEqual({
       file: "yarn",
       args: ["add", "@nx/js@23.4.1"],
@@ -46,6 +46,69 @@ describe("rootUpgradeCommand", () => {
         kind: "nx",
       },
     ]);
+  });
+
+  it("updates an Angular set with one ng update", () => {
+    expect(
+      rootUpgradeCommands("npm", [
+        { name: "@angular/core", from: "19.2.0", to: "19.2.14" },
+        { name: "@angular/common", from: "19.2.0", to: "19.2.14" },
+      ]),
+    ).toEqual([
+      {
+        file: "npx",
+        args: ["ng", "update", "@angular/core@19.2.14", "@angular/common@19.2.14"],
+        display: "npx ng update @angular/core@19.2.14 @angular/common@19.2.14",
+        kind: "migrate",
+      },
+    ]);
+  });
+
+  it("updates a Storybook set with one storybook upgrade", () => {
+    expect(
+      rootUpgradeCommand("npm", [
+        { name: "storybook", from: "8.4.0", to: "8.6.0" },
+        { name: "@storybook/react", from: "8.4.0", to: "8.6.0" },
+      ]),
+    ).toEqual({
+      file: "npx",
+      args: ["storybook@8.6.0", "upgrade"],
+      display: "npx storybook@8.6.0 upgrade",
+      kind: "migrate",
+    });
+  });
+
+  it("filters a pnpm workspace member and does not add a catalog dependency", () => {
+    expect(
+      rootUpgradeCommands("pnpm", [
+        { name: "left-pad", to: "1.3.0", filter: "web" },
+        { name: "ms", to: "2.1.3", filter: "@repo/ui" },
+      ]),
+    ).toEqual([
+      {
+        file: "pnpm",
+        args: ["--filter", "web", "add", "left-pad@1.3.0"],
+        display: "pnpm --filter web add left-pad@1.3.0",
+        kind: "install",
+      },
+      {
+        file: "pnpm",
+        args: ["--filter", "@repo/ui", "add", "ms@2.1.3"],
+        display: "pnpm --filter '@repo/ui' add ms@2.1.3",
+        kind: "install",
+      },
+    ]);
+    expect(
+      rootUpgradeCommand("pnpm", [{ name: "minimist", to: "1.2.8", catalog: "default" }]),
+    ).toEqual({
+      file: "pnpm",
+      args: [],
+      display: "Set minimist to 1.2.8 in pnpm-workspace.yaml, then pnpm install",
+      kind: "catalog",
+    });
+    expect(
+      rootUpgradeCommand("npm", [{ name: "left-pad", to: "1.3.0", filter: "web" }])?.display,
+    ).toBe("npm install left-pad@1.3.0");
   });
 
   it("uses nx migrate only when the root is the nx CLI", () => {

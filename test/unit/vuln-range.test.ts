@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { inferSafeFloorFromVulnerableRange } from "../../src/util/vuln-range.js";
 import { firstSafeForcedVersion } from "../../src/decision/engine.js";
 

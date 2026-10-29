@@ -1,40 +1,32 @@
 import { loadConfig } from "../config.js";
-import {
-  alertsFromInput,
-  groupAlerts,
-  loadAlertFile,
-} from "../alerts/dependabot.js";
 import { decide, lookupFromRegistry, resolveUpgradeDecision } from "../decision/engine.js";
 import { analyzeNpmGraph } from "../graph/npm.js";
+import { resolveProjectDir } from "../graph/workspace.js";
 import { applyFix } from "../fix/apply.js";
 import { createLiveRegistry } from "../registry/verify.js";
 import { createLiveInstall } from "../install/client.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
-import { listDropCandidates } from "./check.js";
+import { findingForSilentPin, readPins } from "./check.js";
 import { nowIso } from "../util/time.js";
-import type { AuditClient, CommandResult, InstallClient, PackageAlertGroup, RegistryClient } from "../types.js";
-
-export async function runAnalyze(opts: {
-  cwd: string;
-  alertPath?: string;
-  registry?: RegistryClient;
-  enableAudit?: boolean;
-  audit?: AuditClient;
-}): Promise<CommandResult> {
-  return runFix({ ...opts, apply: false });
-}
+import type {
+  AuditClient,
+  CommandResult,
+  InstallClient,
+  PackageAlertGroup,
+  RegistryClient,
+} from "../types.js";
 
 export async function runFix(opts: {
   cwd: string;
-  alertPath?: string;
+  /** When set, only this audit package is planned or written. */
+  package?: string;
   apply?: boolean;
   skipInstall?: boolean;
   registry?: RegistryClient;
-  enableAudit?: boolean;
   audit?: AuditClient;
   install?: InstallClient;
 }): Promise<CommandResult> {
-  const cwd = opts.cwd;
+  const cwd = resolveProjectDir(opts.cwd);
   const config = loadConfig(cwd);
   const groupsResult = await loadGroups(opts, cwd, config.audit.minSeverity);
 
@@ -43,7 +35,7 @@ export async function runFix(opts: {
       exitCode: 1,
       messages: [groupsResult.error],
       report: {
-        title: "analyze: empty",
+        title: "fix: empty",
         generatedAt: nowIso(),
         cwd,
         summary: { groups: 0 },
@@ -52,23 +44,40 @@ export async function runFix(opts: {
     };
   }
 
-  const groups = groupsResult.groups;
-  if (!groups.length) {
-    const removable = listDropCandidates(cwd, config);
-    const hint = removable.length
-      ? `${removable.length} existing override(s) are REMOVABLE (${removable.map((e) => e.entry.package).join(", ")}) — run \`supplywarden verify --apply\` to drop them. \`fix --apply\` is only for new findings.`
-      : opts.alertPath
-        ? "No package alerts found in input"
-        : "Audit found no vulnerabilities at the configured minimum severity";
+  const groups = opts.package
+    ? groupsResult.groups.filter((group) => group.package === opts.package)
+    : groupsResult.groups;
+  if (opts.package && !groups.length) {
     return {
       exitCode: 1,
-      messages: [hint],
+      messages: [`${opts.package} is not in this audit.`],
       report: {
-        title: "analyze: empty",
+        title: "fix: empty",
         generatedAt: nowIso(),
         cwd,
-        summary: { groups: 0, removable: removable.length },
-        entries: removable,
+        summary: { groups: 0 },
+        entries: [],
+      },
+    };
+  }
+  if (!groups.length) {
+    const pins = readPins(cwd);
+    const silent = pins.map((pin) => findingForSilentPin(cwd, pin.package, pin.version));
+    const drops = silent.filter((row) => row.action === "drop");
+    const hint = pins.length
+      ? drops.length
+        ? `Audit is clean. ${silent.length - drops.length} pin(s) stay because they are installed. ${drops.length} unused override(s): ${drops.map((row) => row.package).join(", ")}.`
+        : `Audit is clean. ${pins.length} pin(s) stay installed, so the silence is the override doing its job.`
+      : "Audit found no vulnerabilities at the configured minimum severity";
+    return {
+      exitCode: pins.length ? 0 : 1,
+      messages: [hint],
+      report: {
+        title: "fix: empty",
+        generatedAt: nowIso(),
+        cwd,
+        summary: { groups: 0, overrides: pins.length },
+        entries: [],
       },
     };
   }
@@ -87,6 +96,8 @@ export async function runFix(opts: {
         advisories: group.advisories,
         chains: graph.chains,
         dependencyKind: kind,
+        directs: graph.directs,
+        pinDevelopment: config.pinDevelopment,
       },
     );
     const result = await applyFix({
@@ -121,26 +132,11 @@ export async function runFix(opts: {
 
 async function loadGroups(
   opts: {
-    alertPath?: string;
-    enableAudit?: boolean;
     audit?: AuditClient;
   },
   cwd: string,
   minSeverity: import("../types.js").Severity,
 ): Promise<{ groups: PackageAlertGroup[] } | { error: string }> {
-  if (opts.alertPath) {
-    const raw = loadAlertFile(opts.alertPath);
-    return { groups: groupAlerts(alertsFromInput(raw)) };
-  }
-
-  const auditEnabled = opts.enableAudit !== false;
-  if (!auditEnabled) {
-    return {
-      error:
-        "No alert file given and audit was skipped (--skip-audit). Pass a Dependabot JSON file, or omit --skip-audit to run npm/pnpm/yarn audit",
-    };
-  }
-
   const client = opts.audit ?? createLiveAudit();
   const result = await client.audit(cwd);
   if (result.error && !result.vulnerabilities.length) {

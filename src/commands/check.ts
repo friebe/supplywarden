@@ -1,560 +1,352 @@
-import { actorName, loadConfig } from "../config.js";
+import { loadConfig } from "../config.js";
 import {
-  classifyEntry,
-  classifyUntrackedOverride,
-  isDropCandidate,
-  pickPrimary,
-  reconcileWithAudit,
-  sortCheckEntries,
-} from "../check/classify.js";
-import { breakingPinNote, breakingUpgradeNote, decide, formatUpgradeTarget, formatUpgradeTargets, lookupFromRegistry, resolveUpgradeDecision } from "../decision/engine.js";
-import { specFloorSafe } from "../util/semver-spec.js";
-import { newEntryId, readMetadata, writeMetadata } from "../metadata/store.js";
-import { addDaysIso, nowIso } from "../util/time.js";
-import {
-  createLiveAudit,
-  filterFindings,
-  findingsToGroups,
-  uncoveredFindings,
-} from "../audit/client.js";
-import { importOverridesFromPackageJson } from "../metadata/import.js";
-import { alertsFromInput, groupAlerts, loadAlertFile } from "../alerts/dependabot.js";
-import { analyzeNpmGraph, dependencyKindLabel, mergeDependencyKind, resolvePackageManager } from "../graph/npm.js";
+  breakingPinNote,
+  breakingUpgradeNote,
+  decide,
+  formatUpgradeTargets,
+  lookupFromRegistry,
+  pinLabel,
+  rangeRejectionNote,
+  safeDirectCopyNote,
+  resolveUpgradeDecision,
+  stillVulnerable,
+  vulnerableReach,
+} from "../decision/engine.js";
+import { analyzeNpmGraph, resolvePackageManager } from "../graph/npm.js";
+import { resolveProjectDir } from "../graph/workspace.js";
+import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
 import { createLiveRegistry } from "../registry/verify.js";
-import { rootUpgradeCommands } from "../fix/upgrade-command.js";
+import { groupUpgradeNote, rootUpgradeCommands } from "../fix/upgrade-command.js";
+import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
+import { specFloorSafe, specMinVersion } from "../util/semver-spec.js";
+import { advisoryBrief, findingLines, withDirectPatch } from "../report/model.js";
+import { nowIso } from "../util/time.js";
 import type {
   AuditClient,
-  CheckEntry,
   CommandResult,
   Decision,
-  DependencyKind,
-  MetadataEntry,
+  Finding,
+  GraphAnalysis,
   PackageAlertGroup,
+  PackageManager,
   RegistryClient,
+  Severity,
   SupplywardenConfig,
 } from "../types.js";
 
 export async function runCheck(opts: {
   cwd: string;
   strict?: boolean;
-  enableAudit?: boolean;
-  /** Dependabot JSON — NEW findings without live `npm audit` (kitchen-sink fixture). */
-  alertPath?: string;
   audit?: AuditClient;
   registry?: RegistryClient;
 }): Promise<CommandResult> {
-  const cwd = opts.cwd;
+  const cwd = resolveProjectDir(opts.cwd);
   const config = loadConfig(cwd);
-  const metadata = readMetadata(cwd, config);
-  const active = metadata.entries.filter(
-    (e) => e.status === "active" || e.status === "pending_verify" || e.status === "verify_failed",
-  );
-  const classified = active.map((e) => classifyEntry(cwd, e));
-  const untracked = listUntrackedOverrides(cwd, config, metadata);
-  classified.push(...untracked);
-
-  const auditEnabled = opts.enableAudit !== false;
-  let auditError: string | undefined;
-  const newGroups: PackageAlertGroup[] = [];
-
-  if (opts.alertPath) {
-    const raw = loadAlertFile(opts.alertPath);
-    const known = new Set([
-      ...metadata.entries
-        .filter((e) => e.status !== "resolved" && e.status !== "superseded")
-        .map((e) => e.package),
-      ...untracked.map((e) => e.entry.package),
-    ]);
-    newGroups.push(...groupAlerts(alertsFromInput(raw)).filter((g) => !known.has(g.package)));
-    const registry = opts.registry ?? createLiveRegistry(cwd);
-    classified.push(
-      ...(await Promise.all(newGroups.map((group) => entryFromAuditGroup(cwd, group, config, registry)))),
-    );
-  } else if (auditEnabled) {
-    const client = opts.audit ?? createLiveAudit();
-    const result = await client.audit(cwd);
-    auditError = result.error;
-    const filtered = filterFindings(result.vulnerabilities, config.audit.minSeverity);
-    if (!auditError) {
-      const reconciled = reconcileWithAudit(classified, filtered);
-      classified.splice(0, classified.length, ...reconciled);
-    }
-    const uncovered = uncoveredFindings(filtered, metadata.entries);
-    newGroups.push(...findingsToGroups(uncovered));
-    const registry = opts.registry ?? (opts.audit ? undefined : createLiveRegistry(cwd));
-    classified.push(
-      ...(await Promise.all(newGroups.map((group) => entryFromAuditGroup(cwd, group, config, registry)))),
-    );
+  const groups = await loadGroups(opts, cwd, config.audit.minSeverity);
+  if ("error" in groups) {
+    return {
+      exitCode: 1,
+      messages: [groups.error],
+      report: {
+        title: "check",
+        generatedAt: nowIso(),
+        cwd,
+        summary: {},
+        entries: [],
+      },
+    };
   }
 
-  const registryForWait = opts.registry ?? createLiveRegistry(cwd);
-  const waitNotes = await refreshWaitEntries(cwd, config, classified, registryForWait);
-  const promoted = await promoteDeferredUpgrades(cwd, config, classified, registryForWait);
-  const seen = recordSeenFindings(metadata, classified, config);
-  if (waitNotes.wrote || promoted.wrote || seen.wrote) {
-    writeMetadata(cwd, config, metadata);
+  const registry = opts.registry ?? createLiveRegistry(cwd);
+  const pins = readPins(cwd);
+  const findings: Finding[] = [];
+  for (const group of groups.groups) {
+    findings.push(await findingFromAudit(cwd, config, group, registry));
+  }
+  const seen = new Set(findings.map((f) => f.package));
+  for (const pin of pins) {
+    if (seen.has(pin.package)) continue;
+    findings.push(findingForSilentPin(cwd, pin.package, pin.version));
   }
 
-  const sorted = sortCheckEntries(classified);
-
-  const counts: Record<string, number> = {};
-  for (const c of sorted) {
-    counts[c.status] = (counts[c.status] ?? 0) + 1;
-  }
-
-  const removableCount = sorted.filter((c) =>
-    c.statuses.includes("REMOVABLE") || c.statuses.includes("RESOLVED"),
-  ).length;
-  const messages = [
-    `supplywarden check – ${active.length} active overrides`,
-    `Summary: ${Object.entries(counts)
-      .map(([k, v]) => `${v} ${k.toLowerCase()}`)
-      .join(" · ") || "none"}`,
-  ];
-  if (untracked.length) {
+  const actionable = findings.filter((f) => f.action === "upgrade" || f.action === "override");
+  const messages = findings.flatMap((f) => findingLines(f));
+  if (!findings.length) {
     messages.push(
-      `${untracked.length} override(s) in package.json are untracked — run supplywarden init`,
-    );
-  }
-  for (const entry of sorted.filter((c) => c.status === "NEW" || c.statuses.includes("NEW"))) {
-    messages.push(formatNewFindingMessage(entry));
-  }
-  for (const note of waitNotes.messages) messages.push(note);
-  for (const note of promoted.messages) messages.push(note);
-  if (seen.count) {
-    messages.push(
-      `Recorded ${seen.count} finding(s) as seen. The next check lists them as deferred, not NEW, until reviewBy.`,
-    );
-  }
-  if (!sorted.length) {
-    messages.push(
-      "Nothing to show: no security-metadata.json entries and no package.json overrides. Run init or analyze/fix.",
-    );
-  }
-  if (opts.alertPath) {
-    messages.push(`alerts: ${newGroups.length} untracked finding(s) from ${opts.alertPath}`);
-  } else if (auditEnabled) {
-    messages.push(
-      auditError
-        ? `audit failed: ${auditError}`
-        : `audit: ${newGroups.length} untracked finding(s) (≥ ${config.audit.minSeverity})`,
-    );
-  }
-
-  const overdueHigh = sorted.some(
-    (c) =>
-      c.statuses.includes("OVERDUE") &&
-      c.entry.advisories.some((a) => a.severity === "high" || a.severity === "critical"),
-  );
-  const hasNew = (counts.NEW ?? 0) > 0;
-  const hasUntracked = (counts.UNTRACKED ?? 0) > 0;
-  const exitCode =
-    opts.strict &&
-    (overdueHigh ||
-      (counts.DRIFT ?? 0) > 0 ||
-      (counts.VERIFY_FAILED ?? 0) > 0 ||
-      hasNew ||
-      hasUntracked ||
-      Boolean(auditError))
-      ? 1
-      : 0;
-
-  if (opts.strict && exitCode === 1) {
-    messages.push(
-      "strict: failing due to overdue high/critical, drift, verify_failed, new audit findings, or untracked overrides",
+      "Audit found nothing at the configured minimum severity, and package.json has no overrides.",
     );
   }
 
   return {
-    exitCode,
+    exitCode: opts.strict && actionable.length ? 1 : 0,
     messages,
-    writtenFiles: waitNotes.wrote || promoted.wrote || seen.wrote ? [config.metadataPath] : undefined,
     report: {
-      title: `supplywarden check – ${active.length} active overrides`,
+      title: "check",
       generatedAt: nowIso(),
       cwd,
       summary: {
-        active: active.length,
-        untracked: untracked.length,
-        removable: removableCount,
-        ...counts,
-        ...(opts.alertPath || auditEnabled ? { auditNew: newGroups.length } : {}),
+        findings: findings.length,
+        upgrade: findings.filter((f) => f.action === "upgrade").length,
+        override: findings.filter((f) => f.action === "override").length,
+        keep: findings.filter((f) => f.action === "keep").length,
+        drop: findings.filter((f) => f.action === "drop").length,
+        wait: findings.filter((f) => f.action === "wait").length,
       },
-      entries: sorted,
-      groups: newGroups.length ? newGroups : undefined,
+      entries: findings,
+      groups: groups.groups,
     },
   };
 }
 
-export function listTrackedAndUntrackedOverrides(
+async function findingFromAudit(
   cwd: string,
   config: SupplywardenConfig,
-): CheckEntry[] {
-  const metadata = readMetadata(cwd, config);
-  const tracked = metadata.entries
-    .filter((e) => e.status === "active" || e.status === "pending_verify" || e.status === "verify_failed")
-    .map((e) => classifyEntry(cwd, e));
-  const untracked = listUntrackedOverrides(cwd, config, metadata);
-  return [...tracked, ...untracked];
-}
-
-export function listDropCandidates(cwd: string, config: SupplywardenConfig): CheckEntry[] {
-  return listTrackedAndUntrackedOverrides(cwd, config).filter(isDropCandidate);
-}
-
-export function listOverridesToProbe(
-  cwd: string,
-  config: SupplywardenConfig,
-  pkg?: string,
-): CheckEntry[] {
-  const all = listTrackedAndUntrackedOverrides(cwd, config);
-  if (pkg) {
-    return all.filter((e) => e.entry.package === pkg);
-  }
-  return all.filter(isDropCandidate);
-}
-
-export function listUntrackedOverrides(
-  cwd: string,
-  config: SupplywardenConfig,
-  metadata: import("../types.js").SecurityMetadata,
-): CheckEntry[] {
-  const imported = importOverridesFromPackageJson(cwd, config, (pkg) => analyzeNpmGraph(cwd, pkg));
-  const tracked = new Set(
-    metadata.entries
-      .filter((e) => e.status !== "resolved" && e.status !== "superseded")
-      .map((e) => `${e.package}::${e.forcedVersion}`),
-  );
-  return imported
-    .filter((e) => !tracked.has(`${e.package}::${e.forcedVersion}`))
-    .map((entry) => classifyUntrackedOverride(cwd, entry));
-}
-
-/** Saved WAIT rows are re-decided every check: proven upgrade, override, or another wait cycle. */
-async function refreshWaitEntries(
-  cwd: string,
-  config: SupplywardenConfig,
-  classified: CheckEntry[],
-  registry: RegistryClient,
-): Promise<{ wrote: boolean; messages: string[] }> {
-  const messages: string[] = [];
-  let wrote = false;
-  for (const item of classified) {
-    if (item.entry.strategy !== "wait") continue;
-    if (item.entry.status !== "active") continue;
-    if (item.statuses.includes("REMOVABLE") || item.statuses.includes("RESOLVED")) continue;
-
-    const graph = analyzeNpmGraph(cwd, item.entry.package);
-    const kind = mergeDependencyKind(undefined, graph.dependencyKind);
-    const decision = await resolveUpgradeDecision(
-      decide({
-        graph: { ...graph, dependencyKind: kind },
-        advisories: item.entry.advisories,
-        config,
-      }),
-      lookupFromRegistry(registry),
-      {
-        vulnPackage: item.entry.package,
-        advisories: item.entry.advisories,
-        chains: graph.chains,
-        dependencyKind: kind,
-      },
-    );
-    const outcome = waitRecheckOutcome(decision);
-    if (outcome === "unknown") {
-      messages.push(
-        `WAIT ${item.entry.package}: registry recheck inconclusive — still waiting`,
-      );
-      continue;
-    }
-
-    wrote = true;
-    if (outcome === "wait") {
-      item.entry.reviewBy = addDaysIso(config.defaultReviewDays);
-      item.entry.reviewReason = "Wait — rechecked, no proven root upgrade yet";
-      const statuses = item.statuses.filter((s) => s !== "OVERDUE");
-      if (!statuses.length) statuses.push("OK");
-      item.statuses = statuses;
-      item.status = pickPrimary(statuses);
-      item.suggestedAction = `Still waiting — no proven root upgrade. Next review is reviewBy.`;
-      messages.push(`WAIT ${item.entry.package}: still no proven root upgrade`);
-      continue;
-    }
-
-    item.entry.strategy = decision.strategy;
-    item.entry.reason = decision.reason;
-    item.entry.reviewReason =
-      decision.strategy === "upgrade"
-        ? "Root upgrade now closes the advisory"
-        : "Override now required";
-    item.decision = decision;
-    const pm = resolvePackageManager(cwd);
-    const displays =
-      decision.strategy === "upgrade"
-        ? rootUpgradeCommands(pm, decision.upgradeTargets ?? []).map((c) => c.display)
-        : [];
-    item.upgradeCommand = displays[0];
-    item.upgradeCommands = displays.length ? displays : undefined;
-    const bump = formatUpgradeTargets(decision);
-    item.suggestedAction =
-      decision.strategy === "upgrade"
-        ? `WAIT recheck: UPGRADE ${bump} — run ${displays.map((c) => `\`${c}\``).join(" then ")}`
-        : `WAIT recheck: OVERRIDE ${item.entry.package}@${decision.forcedVersion ?? item.entry.forcedVersion} — run \`supplywarden fix --apply\``;
-    messages.push(
-      decision.strategy === "upgrade"
-        ? `WAIT ${item.entry.package}: now UPGRADE ${bump}${displays.length ? ` — ${displays.join(" then ")}` : ""}`
-        : `WAIT ${item.entry.package}: now OVERRIDE ${item.entry.package}@${decision.forcedVersion ?? item.entry.forcedVersion}`,
-    );
-  }
-  return { wrote, messages };
-}
-
-function waitRecheckOutcome(decision: Decision): "upgrade" | "override" | "wait" | "unknown" {
-  if (decision.strategy === "wait") return "wait";
-  if (decision.strategy === "override") return "override";
-  const targets = decision.upgradeTargets ?? [];
-  if (targets.length > 0 && targets.every((t) => Boolean(t.to))) return "upgrade";
-  return "unknown";
-}
-
-/** First sighting stays NEW in this report and is stored so the next check is not NEW again. */
-function recordSeenFindings(
-  metadata: import("../types.js").SecurityMetadata,
-  classified: CheckEntry[],
-  config: SupplywardenConfig,
-): { wrote: boolean; count: number } {
-  let count = 0;
-  for (const item of classified) {
-    if (!item.statuses.includes("NEW")) continue;
-    const already = metadata.entries.some(
-      (e) =>
-        e.package === item.entry.package &&
-        e.status !== "resolved" &&
-        e.status !== "superseded",
-    );
-    if (already) continue;
-    metadata.entries.push({
-      ...item.entry,
-      id: newEntryId(),
-      status: "active",
-      strategy: "defer",
-      reason: deferReason(item),
-      createdBy: actorName(),
-      reviewBy: addDaysIso(config.defaultReviewDays),
-      reviewReason: "Seen — not applied this cycle",
-      needsReview: true,
-    });
-    count += 1;
-  }
-  return { wrote: count > 0, count };
-}
-
-function deferReason(entry: CheckEntry): string {
-  const installed = entry.installedVersions?.join(", ") || "?";
-  const pkg = entry.entry.package;
-  const tail = "Not applied this cycle. The next check keeps this out of NEW until reviewBy.";
-  if (entry.decision?.strategy === "upgrade") {
-    const breaking = breakingUpgradeNote(entry.decision);
-    const bump = formatUpgradeTargets(entry.decision) || (entry.roots ?? []).join(", ") || pkg;
-    const cmds = (entry.upgradeCommands ?? (entry.upgradeCommand ? [entry.upgradeCommand] : [])).join(" then ");
-    if (breaking) {
-      return `Seen, not applied (lockfile ${installed}). ${breaking} ${tail}`;
-    }
-    return cmds
-      ? `Seen, not applied (lockfile ${installed}). Suggested ${bump} — ${cmds}. ${tail}`
-      : `Seen, not applied (lockfile ${installed}). Suggested ${bump}. ${tail}`;
-  }
-  if (entry.decision?.strategy === "wait") {
-    return `Seen, not applied (lockfile ${installed}). No override or root upgrade this cycle. ${tail}`;
-  }
-  const pin = breakingPinNote(pkg, entry.installedVersions ?? [], entry.entry.forcedVersion);
-  const override = `Suggested override ${pkg}@${entry.entry.forcedVersion}.`;
-  return pin
-    ? `Seen, not applied (lockfile ${installed}). ${override} ${pin} ${tail}`
-    : `Seen, not applied (lockfile ${installed}). ${override} ${tail}`;
-}
-
-/** A deferred row stays deferred. A later proven root upgrade is written back; reviewBy does not slide. */
-async function promoteDeferredUpgrades(
-  cwd: string,
-  config: SupplywardenConfig,
-  classified: CheckEntry[],
-  registry: RegistryClient,
-): Promise<{ wrote: boolean; messages: string[] }> {
-  const messages: string[] = [];
-  let wrote = false;
-  for (const item of classified) {
-    if (item.entry.strategy !== "defer") continue;
-    if (item.entry.status !== "active") continue;
-    if (item.statuses.includes("REMOVABLE") || item.statuses.includes("RESOLVED")) continue;
-
-    const graph = analyzeNpmGraph(cwd, item.entry.package);
-    const kind = mergeDependencyKind(undefined, graph.dependencyKind);
-    const decision = await resolveUpgradeDecision(
-      decide({
-        graph: { ...graph, dependencyKind: kind },
-        advisories: item.entry.advisories,
-        config,
-      }),
-      lookupFromRegistry(registry),
-      {
-        vulnPackage: item.entry.package,
-        advisories: item.entry.advisories,
-        chains: graph.chains,
-        dependencyKind: kind,
-      },
-    );
-    if (waitRecheckOutcome(decision) !== "upgrade") continue;
-
-    wrote = true;
-    item.entry.strategy = "upgrade";
-    item.entry.reason = decision.reason;
-    item.entry.reviewReason = "Root upgrade now closes the advisory";
-    item.decision = decision;
-    const pm = resolvePackageManager(cwd);
-    const displays = rootUpgradeCommands(pm, decision.upgradeTargets ?? []).map((c) => c.display);
-    item.upgradeCommand = displays[0];
-    item.upgradeCommands = displays.length ? displays : undefined;
-    const statuses = item.statuses.filter((s) => s !== "DEFERRED");
-    if (!statuses.length) statuses.push("OK");
-    item.statuses = statuses;
-    item.status = pickPrimary(statuses);
-    const bump = formatUpgradeTargets(decision);
-    const cmdText = displays.map((c) => `\`${c}\``).join(" then ");
-    item.suggestedAction = cmdText
-      ? `Previously seen. UPGRADE ${bump} now closes the advisory — run ${cmdText}`
-      : `Previously seen. UPGRADE ${bump} now closes the advisory.`;
-    messages.push(
-      `DEFERRED ${item.entry.package}: now UPGRADE ${bump}${displays.length ? ` — ${displays.join(" then ")}` : ""}`,
-    );
-  }
-  return { wrote, messages };
-}
-
-function formatNewFindingMessage(entry: CheckEntry): string {
-  const installed = entry.installedVersions?.join(", ") || "?";
-  const pkg = entry.entry.package;
-  if (entry.decision?.strategy === "upgrade") {
-    const breaking = breakingUpgradeNote(entry.decision);
-    if (breaking) return `NEW ${pkg} (lockfile ${installed}): ${breaking}`;
-    const bump = formatUpgradeTargets(entry.decision) || (entry.roots ?? []).join(", ") || pkg;
-    const cmds = (entry.upgradeCommands ?? (entry.upgradeCommand ? [entry.upgradeCommand] : [])).join(" then ");
-    return cmds
-      ? `NEW ${pkg} (lockfile ${installed}): ${bump} — ${cmds}`
-      : `NEW ${pkg} (lockfile ${installed}): ${bump}`;
-  }
-  if (entry.decision?.strategy === "wait") {
-    return `NEW ${pkg} (lockfile ${installed}): WAIT — no override/upgrade this cycle`;
-  }
-  const pin = breakingPinNote(pkg, entry.installedVersions ?? [], entry.entry.forcedVersion);
-  return pin
-    ? `NEW ${pkg} (lockfile ${installed}): OVERRIDE ${pkg}@${entry.entry.forcedVersion} — ${pin}`
-    : `NEW ${pkg} (lockfile ${installed}): OVERRIDE ${pkg}@${entry.entry.forcedVersion}`;
-}
-
-function newFindingAction(
   group: PackageAlertGroup,
-  decision: Decision,
-  roots: string[],
-  kind: DependencyKind | undefined,
-  upgradeCmds: string[],
-  installed: string[],
-  autoApplyRootUpgrade?: boolean,
-): string {
-  const kindTag = dependencyKindLabel(kind);
-  const sev = group.maxSeverity.toUpperCase() + (kindTag ? ` (${kindTag})` : "");
-  if (decision.strategy === "upgrade") {
-    const breaking = breakingUpgradeNote(decision);
-    if (breaking) return `New ${sev}: ${breaking}`;
-    const targets = (decision.upgradeTargets ?? [])
-      .map((t) => formatUpgradeTarget(t))
-      .join(", ");
-    const what = targets || roots.join(", ") || group.package;
-    const cmdText = upgradeCmds.map((c) => `\`${c}\``).join(" then ");
-    if (cmdText && !autoApplyRootUpgrade) {
-      return `New ${sev}: UPGRADE ${what} — run ${cmdText}`;
-    }
-    if (cmdText && autoApplyRootUpgrade) {
-      return `New ${sev}: UPGRADE ${what} — run \`supplywarden fix --apply\` (starts ${cmdText})`;
-    }
-    return `New ${sev}: UPGRADE ${what} — run \`supplywarden fix --apply\``;
-  }
-  if (decision.strategy === "wait") {
-    return `New ${sev}: WAIT — no override or root upgrade this cycle. \`supplywarden fix --apply\` records the wait until reviewBy`;
-  }
-  const ver = decision.forcedVersion ?? group.forcedVersion;
-  const pin = breakingPinNote(group.package, installed, ver);
-  if (!ver || !specFloorSafe(ver, group.advisories)) {
-    return `New ${sev}: ${group.package} has no safe override version — inspect with \`supplywarden why ${group.package}\` (not \`fix --apply\`)`;
-  }
-  const rootPart = roots.length ? ` (roots: ${roots.join(", ")})` : "";
-  const breakPart = pin ? ` ${pin}` : "";
-  return `New ${sev}: OVERRIDE ${group.package}@${ver}${rootPart} — run \`supplywarden fix --apply\`.${breakPart}`;
-}
-
-async function entryFromAuditGroup(
-  cwd: string,
-  group: PackageAlertGroup,
-  config: SupplywardenConfig,
-  registry?: RegistryClient,
-): Promise<CheckEntry> {
+  registry: RegistryClient,
+): Promise<Finding> {
   const graph = analyzeNpmGraph(cwd, group.package);
-  const kind = mergeDependencyKind(group.dependencyKind, graph.dependencyKind);
+  group.installedVersion = graph.versions[0];
   const decision = await resolveUpgradeDecision(
-    decide({ graph: { ...graph, dependencyKind: kind }, advisories: group.advisories, config }),
+    decide({ graph, advisories: group.advisories, config }),
     lookupFromRegistry(registry),
-    { vulnPackage: group.package, advisories: group.advisories, chains: graph.chains, dependencyKind: kind },
+    {
+      vulnPackage: group.package,
+      advisories: group.advisories,
+      chains: graph.chains,
+      dependencyKind: graph.dependencyKind,
+      directs: graph.directs,
+      pinDevelopment: config.pinDevelopment,
+    },
   );
-  const roots = graph.roots.map((r) => r.name);
-  const chains = graph.chains.map((c) => c.path.join(" → "));
+  return toFinding(cwd, group, graph, decision);
+}
+
+/** Via names the workspace member for a direct dependency, and the member plus the npm root otherwise. */
+function displayRoot(
+  pkg: string,
+  root: { name: string; version: string; importer?: string },
+): string {
+  if (root.importer && root.name === pkg) return root.importer;
+  if (root.importer) return `${root.importer} → ${root.name}@${root.version}`;
+  return `${root.name}@${root.version}`;
+}
+
+function displayChain(chain: { path: string[]; importer?: string }): string {
+  const body = chain.path.join(" → ");
+  return chain.importer ? `${chain.importer} → ${body}` : body;
+}
+
+function segmentName(segment: string): string {
+  const at = segment.lastIndexOf("@");
+  return at > 0 ? segment.slice(0, at) : segment;
+}
+
+function toFinding(
+  cwd: string,
+  group: PackageAlertGroup,
+  graph: GraphAnalysis,
+  decision: Decision,
+): Finding {
   const pm = resolvePackageManager(cwd);
-  const upgradeCmds =
-    decision.strategy === "upgrade"
-      ? rootUpgradeCommands(pm, decision.upgradeTargets ?? [])
-      : [];
-  const upgradeDisplays = upgradeCmds.map((c) => c.display);
-  const entry: MetadataEntry = {
-    id: `audit:${group.package}`,
-    status: "pending_verify",
+  const reach = vulnerableReach(graph, group.advisories);
+  const roots = reach.roots.map((root) => displayRoot(group.package, root));
+  const chains = reach.chains.map((chain) => displayChain(chain));
+  const trails = reach.chains.map((chain) => {
+    const path = displayChain(chain);
+    const parentSeg = chain.path.length >= 2 ? chain.path[chain.path.length - 2] : chain.importer;
+    const parent = parentSeg ? segmentName(parentSeg) : "";
+    const range = parent ? graph.dependers?.find((dep) => dep.parent === parent)?.range : undefined;
+    return range ? { path, range } : { path };
+  });
+  const base: Finding = {
     package: group.package,
-    forcedVersion: decision.forcedVersion ?? group.forcedVersion ?? "?",
-    scope: decision.scope,
+    severity: group.maxSeverity,
     advisories: group.advisories,
-    reason: "Untracked finding from package-manager audit",
-    strategy: decision.strategy,
-    rootPackages: roots,
-    dependencyChains: chains,
-    packageManager: pm,
-    manifestPath: group.manifestPath,
-    createdAt: nowIso(),
-    createdBy: "audit",
-    reviewBy: nowIso(),
-    reviewReason:
-      decision.strategy === "wait"
-        ? "Wait — no override/upgrade this cycle; re-open at reviewBy"
-        : "New audit finding – run fix --apply to track",
-    needsReview: true,
-  };
-  return {
-    entry,
-    status: "NEW",
-    statuses: ["NEW"],
-    suggestedAction: newFindingAction(
-      group,
-      decision,
-      roots,
-      kind,
-      upgradeDisplays,
-      graph.versions,
-      config.autoApplyRootUpgrade,
-    ),
-    issues: [],
+    installed: graph.versions,
     roots,
     chains,
-    installedVersions: graph.versions,
-    decision,
-    dependencyKind: kind,
-    upgradeCommand: config.autoApplyRootUpgrade ? undefined : upgradeDisplays[0],
-    upgradeCommands: config.autoApplyRootUpgrade ? undefined : upgradeDisplays,
+    trails,
+    dependencyKind: graph.dependencyKind,
+    action: decision.strategy,
+    summary: decision.reason,
+    advisory: advisoryBrief(group.advisories) || undefined,
+    commands: [],
+    forcedVersion: decision.forcedVersion,
+    upgradeTargets: decision.upgradeTargets,
   };
+
+  if (decision.strategy === "upgrade") {
+    const forced = decision.forcedVersion ?? group.forcedVersion;
+    const targets = withDirectPatch(group.package, forced, decision.upgradeTargets ?? []);
+    let commands = rootUpgradeCommands(pm, targets).map((c) => c.display);
+    if (!commands.length && forced) {
+      const pending = decision.upgradeTargets ?? [];
+      const filters = [...new Set(pending.map((target) => target.filter).filter(Boolean))];
+      const catalogs = [...new Set(pending.map((target) => target.catalog).filter(Boolean))];
+      commands = rootUpgradeCommands(pm, [
+        {
+          name: group.package,
+          to: forced,
+          ...(filters.length === 1 ? { filter: filters[0] } : {}),
+          ...(catalogs.length === 1 ? { catalog: catalogs[0] } : {}),
+        },
+      ]).map((command) => command.display);
+    }
+    const bump = formatUpgradeTargets({ ...decision, upgradeTargets: targets });
+    const noted = { ...decision, upgradeTargets: targets };
+    const note = breakingUpgradeNote(noted);
+    const together = groupUpgradeNote(targets);
+    const rejected = rangeRejectionNote({
+      pkg: group.package,
+      version: forced ?? "",
+      dependers: graph.dependers,
+      strategy: "upgrade",
+      upgradeTargets: targets,
+    });
+    const proven = bump ? bump : "No published root version was proven to close the advisory.";
+    return {
+      ...base,
+      summary: [proven, together, rejected, note].filter(Boolean).join(" "),
+      commands,
+    };
+  }
+
+  if (decision.strategy === "wait") {
+    return {
+      ...base,
+      summary: decision.reason,
+      commands: [`supplywarden why ${group.package}`],
+    };
+  }
+
+  const scopes = decision.scopes?.length ? decision.scopes : [decision.scope];
+
+  const forced = decision.forcedVersion ?? group.forcedVersion;
+  const pin = readPins(cwd).find((p) => p.package === group.package);
+  const pinHolds = Boolean(pin && forced && specFloorSafe(pin.version, group.advisories));
+  const lockStillVulnerable = graph.versions.some((v) => stillVulnerable(v, group.advisories));
+  const pinNote = forced ? breakingPinNote(group.package, graph.versions, forced) : undefined;
+  if (pinHolds && pin) {
+    return {
+      ...base,
+      summary: lockStillVulnerable
+        ? `${group.package}@${pin.version} is already pinned in package.json, but the lockfile is still ${graph.versions.join(", ") || "the old version"}.`
+        : `${group.package}@${pin.version} is already pinned in package.json.`,
+      commands: lockStillVulnerable ? [installCommand(pm)] : [],
+    };
+  }
+  return {
+    ...base,
+    summary: [
+      forced ? pinLabel(group.package, forced, scopes) : decision.reason,
+      forced ? safeDirectCopyNote(graph, group.advisories, scopes) : undefined,
+      forced
+        ? rangeRejectionNote({
+            pkg: group.package,
+            version: forced,
+            dependers: graph.dependers,
+            strategy: "override",
+          })
+        : undefined,
+      pinNote,
+    ]
+      .filter(Boolean)
+      .join(" "),
+    commands: forced ? [`supplywarden fix ${group.package} --apply`] : [],
+  };
+}
+
+/** Audit is silent for this pin. Silence usually means the pin is holding the safe version. */
+export function findingForSilentPin(cwd: string, pkg: string, version: string): Finding {
+  const graph = analyzeNpmGraph(cwd, pkg);
+  const roots = graph.roots.map((r) => `${r.name}@${r.version}`);
+  const base = {
+    package: pkg,
+    severity: "unknown" as const,
+    advisories: [],
+    installed: graph.versions,
+    roots,
+    chains: graph.chains.map((c) => c.path.join(" → ")),
+    dependencyKind: graph.dependencyKind,
+    forcedVersion: version,
+  };
+  if (!graph.inTree) {
+    return {
+      ...base,
+      action: "drop",
+      summary: `${pkg} is not in the lockfile. Override ${version} is unused.`,
+      commands: [`supplywarden verify ${pkg} --apply`],
+    };
+  }
+  const declared = declaredDepRange(cwd, pkg);
+  const declaredFloor = declared ? specMinVersion(declared) : undefined;
+  const pinFloor = specMinVersion(version);
+  if (declaredFloor && pinFloor && declaredFloor === pinFloor) {
+    return {
+      ...base,
+      action: "drop",
+      summary: `package.json already depends on ${pkg}@${declared}. Override ${version} does not change that. It can go.`,
+      commands: [`supplywarden verify ${pkg} --apply`],
+    };
+  }
+  const threshold = loadConfig(cwd).upgradeRootThreshold;
+  const n = graph.roots.length;
+  const installed = graph.versions.join(", ") || version;
+  const count =
+    n > threshold
+      ? `${n} roots, more than the threshold of ${threshold}.`
+      : `${n} root(s), at or under the threshold of ${threshold}.`;
+  return {
+    ...base,
+    action: "keep",
+    summary: `The audit does not list ${pkg} because ${installed} is installed under override ${version}. ${count} That silence is the pin doing its job, not a reason to remove it. verify ${pkg} is the probe if you want to test the drop.`,
+    commands: [`supplywarden verify ${pkg}`],
+  };
+}
+
+function declaredDepRange(cwd: string, pkgName: string): string | undefined {
+  try {
+    const pkg = readPackageJson(cwd) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+    for (const bag of [pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies]) {
+      const range = bag?.[pkgName];
+      if (typeof range === "string") return range.replace(/^npm:/, "");
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function installCommand(pm: PackageManager): string {
+  if (pm === "pnpm") return "pnpm install";
+  if (pm === "yarn") return "yarn install";
+  return "npm install";
+}
+
+export function readPins(cwd: string): Array<{ package: string; version: string }> {
+  try {
+    return extractExistingOverrides(readPackageJson(cwd)).map((pin) => ({
+      package: pin.package,
+      version: pin.version,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function loadGroups(
+  opts: { audit?: AuditClient },
+  cwd: string,
+  minSeverity: Severity,
+): Promise<{ groups: PackageAlertGroup[] } | { error: string }> {
+  const client = opts.audit ?? createLiveAudit();
+  const result = await client.audit(cwd);
+  if (result.error && !result.vulnerabilities.length) {
+    return { error: `audit failed: ${result.error}` };
+  }
+  return { groups: findingsToGroups(filterFindings(result.vulnerabilities, minSeverity)) };
 }

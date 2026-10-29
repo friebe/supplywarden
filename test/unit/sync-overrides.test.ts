@@ -1,33 +1,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { detectPackageManager } from "../../src/graph/npm.js";
-import { readPackageJson, syncOverridesToPackageJson } from "../../src/metadata/sync.js";
-import type { MetadataEntry, SecurityMetadata } from "../../src/types.js";
+import { readPackageJson, writeOverrides } from "../../src/metadata/sync.js";
 
-function entry(pkg: string): MetadataEntry {
-  return {
-    id: pkg,
-    status: "active",
-    package: pkg,
-    forcedVersion: "1.2.3",
-    scope: { type: "global" },
-    advisories: [],
-    reason: "",
-    strategy: "override",
-    rootPackages: [],
-    dependencyChains: [],
-    packageManager: "npm",
-    manifestPath: "package.json",
-    createdAt: "",
-    createdBy: "",
-    reviewBy: "",
-    reviewReason: "",
-  };
-}
-
-const metadata: SecurityMetadata = { version: 1, entries: [entry("qs")] };
+const pins = [{ package: "qs", version: "1.2.3", scope: { type: "global" as const } }];
 
 async function withDir(files: Record<string, string>, fn: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "sw-pm-"));
@@ -68,7 +46,7 @@ describe("detectPackageManager", () => {
   });
 });
 
-describe("syncOverridesToPackageJson", () => {
+describe("writeOverrides", () => {
   it("writes npm overrides only, and strips leftover pnpm.overrides", async () => {
     await withDir(
       {
@@ -79,7 +57,7 @@ describe("syncOverridesToPackageJson", () => {
         "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: {} }),
       },
       async (dir) => {
-        syncOverridesToPackageJson(dir, metadata);
+        writeOverrides(dir, pins);
         const pkg = readPackageJson(dir);
         expect(pkg.overrides).toEqual({ qs: "1.2.3" });
         expect(pkg.pnpm?.overrides).toBeUndefined();
@@ -94,7 +72,7 @@ describe("syncOverridesToPackageJson", () => {
         "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
       },
       async (dir) => {
-        syncOverridesToPackageJson(dir, metadata);
+        writeOverrides(dir, pins);
         const pkg = readPackageJson(dir);
         expect(pkg.overrides).toBeUndefined();
         expect(pkg.pnpm?.overrides).toEqual({ qs: "1.2.3" });
@@ -109,7 +87,7 @@ describe("syncOverridesToPackageJson", () => {
         "yarn.lock": "# yarn\n",
       },
       async (dir) => {
-        syncOverridesToPackageJson(dir, metadata);
+        writeOverrides(dir, pins);
         const pkg = readPackageJson(dir);
         expect(pkg.overrides).toBeUndefined();
         expect(pkg.pnpm).toBeUndefined();
