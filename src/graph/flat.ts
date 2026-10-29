@@ -64,10 +64,15 @@ export function analyzeFlatGraph(
         optional: origin.bag === "opt",
       });
       const chainPath = path.map((n) => `${n.name}@${n.version}`);
-      const key = chainPath.join(">");
+      const key = `${origin.importer ?? ""}\0${chainPath.join(">")}`;
       if (!chainKeys.has(key)) {
         chainKeys.add(key);
-        chains.push({ path: chainPath, package: pkgName, version: node.version });
+        chains.push({
+          path: chainPath,
+          package: pkgName,
+          version: node.version,
+          ...(origin.importer ? { importer: origin.importer } : {}),
+        });
       }
       rootMap.set(`${origin.importer ?? ""}\0${origin.name}`, {
         name: origin.name,
@@ -81,7 +86,7 @@ export function analyzeFlatGraph(
         const edge = parent.deps.find((d) => d.name === pkgName);
         if (edge?.spec) addDepender(parent.name, edge.spec, parent.version);
       } else if (origin.name === pkgName) {
-        addDepender("the project", origin.range);
+        addDepender(origin.importer ?? "the project", origin.range);
       }
       return;
     }

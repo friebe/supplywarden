@@ -121,6 +121,21 @@ async function findingFromAudit(
   return toFinding(cwd, group, graph, decision);
 }
 
+/** Via names the workspace member for a direct dependency, and the member plus the npm root otherwise. */
+function displayRoot(
+  pkg: string,
+  root: { name: string; version: string; importer?: string },
+): string {
+  if (root.importer && root.name === pkg) return root.importer;
+  if (root.importer) return `${root.importer} → ${root.name}@${root.version}`;
+  return `${root.name}@${root.version}`;
+}
+
+function displayChain(chain: { path: string[]; importer?: string }): string {
+  const body = chain.path.join(" → ");
+  return chain.importer ? `${chain.importer} → ${body}` : body;
+}
+
 function segmentName(segment: string): string {
   const at = segment.lastIndexOf("@");
   return at > 0 ? segment.slice(0, at) : segment;
@@ -134,11 +149,11 @@ function toFinding(
 ): Finding {
   const pm = resolvePackageManager(cwd);
   const reach = vulnerableReach(graph, group.advisories);
-  const roots = reach.roots.map((r) => `${r.name}@${r.version}`);
-  const chains = reach.chains.map((c) => c.path.join(" → "));
+  const roots = reach.roots.map((root) => displayRoot(group.package, root));
+  const chains = reach.chains.map((chain) => displayChain(chain));
   const trails = reach.chains.map((chain) => {
-    const path = chain.path.join(" → ");
-    const parentSeg = chain.path.length >= 2 ? chain.path[chain.path.length - 2] : undefined;
+    const path = displayChain(chain);
+    const parentSeg = chain.path.length >= 2 ? chain.path[chain.path.length - 2] : chain.importer;
     const parent = parentSeg ? segmentName(parentSeg) : "";
     const range = parent ? graph.dependers?.find((dep) => dep.parent === parent)?.range : undefined;
     return range ? { path, range } : { path };

@@ -63,6 +63,8 @@ export type DependencyChain = {
   path: string[];
   package: string;
   version: string;
+  /** Workspace package that owns this chain. Omitted outside a pnpm workspace. */
+  importer?: string;
 };
 
 /** An installed package whose dependency range names this package. */

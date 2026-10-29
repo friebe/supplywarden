@@ -13,8 +13,10 @@ export function runWhy(opts: { cwd: string; package: string }): CommandResult {
     graph.dependencyKind === "development" || graph.dependencyKind === "optional"
       ? `Tree: ${graph.dependencyKind} only`
       : undefined,
-    `Roots: ${graph.roots.map((r) => r.name).join(", ") || "—"}`,
-    ...graph.chains.map((c) => c.path.join(" → ")),
+    `Roots: ${graph.roots.map((r) => (r.importer ? `${r.importer} → ${r.name}` : r.name)).join(", ") || "—"}`,
+    ...graph.chains.map((c) =>
+      c.importer ? `${c.importer} → ${c.path.join(" → ")}` : c.path.join(" → "),
+    ),
   ].filter((line): line is string => Boolean(line));
   return {
     exitCode: graph.inTree ? 0 : 1,

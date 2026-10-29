@@ -90,6 +90,13 @@ describe("pnpm workspace", () => {
           ghsaId: "GHSA-ms",
           patchedVersion: "2.1.3",
         },
+        {
+          package: "qs",
+          severity: "high",
+          range: "< 6.11.0",
+          ghsaId: "GHSA-qs",
+          patchedVersion: "6.11.2",
+        },
       ]),
       registry: {
         async verifyPackageVersion() {
@@ -99,13 +106,25 @@ describe("pnpm workspace", () => {
     });
     expect(result.report.cwd).toBe(fixtureDir("pnpm-workspace"));
     const left = result.report.entries.find((entry) => entry.package === "left-pad");
+    expect(left?.action).toBe("upgrade");
+    expect(left?.roots).toEqual(["web"]);
+    expect(left?.trails?.some((trail) => trail.path === "web → left-pad@1.0.0")).toBe(true);
     expect(left?.commands).toContain("pnpm --filter web add left-pad@1.3.0");
     expect(left?.commands.some((command) => command === "pnpm add left-pad@1.3.0")).toBe(false);
     const minimist = result.report.entries.find((entry) => entry.package === "minimist");
+    expect(minimist?.roots).toEqual(["@repo/ui"]);
     expect(minimist?.commands.join(" ")).toMatch(/pnpm-workspace\.yaml/);
     expect(minimist?.commands.some((command) => command.includes("pnpm add"))).toBe(false);
     const ms = result.report.entries.find((entry) => entry.package === "ms");
+    expect(ms?.roots).toEqual(["@repo/ui"]);
+    expect(ms?.action).toBe("upgrade");
     expect(ms?.commands).toContain("pnpm --filter '@repo/ui' add ms@2.1.3");
+    const qsRow = result.report.entries.find((entry) => entry.package === "qs");
+    expect(qsRow?.roots).toEqual(["web → express@4.18.2"]);
+    expect(qsRow?.action).toBe("upgrade");
+    expect(qsRow?.trails?.some((trail) => trail.path.includes("express@4.18.2 → qs@6.5.0"))).toBe(
+      true,
+    );
   });
 });
 

@@ -3,6 +3,7 @@
   "private": true,
   "dependencies": {
     "@repo/ui": "workspace:*",
+    "express": "^4.18.2",
     "left-pad": "1.0.0"
   }
 }

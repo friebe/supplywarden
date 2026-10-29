@@ -130,6 +130,26 @@ describe("analyzeNpmGraph lockfile dispatch", () => {
     expect(ms.roots).toEqual([
       { name: "ms", version: "2.0.0", range: "2.0.0", importer: "@repo/ui" },
     ]);
+    expect(ms.chains).toEqual([
+      { path: ["ms@2.0.0"], package: "ms", version: "2.0.0", importer: "@repo/ui" },
+    ]);
+
+    const qs = analyzeNpmGraph(member, "qs");
+    expect(qs.roots).toEqual([
+      { name: "express", version: "4.18.2", range: "^4.18.2", importer: "web" },
+    ]);
+    expect(qs.chains.map((chain) => chain.path)).toEqual([["express@4.18.2", "qs@6.5.0"]]);
+
+    const picomatch = analyzeNpmGraph(member, "picomatch");
+    expect(picomatch.inTree).toBe(true);
+    expect(picomatch.roots.map((root) => root.name)).toContain("fdir");
+
+    const bootOnly = analyzeNpmGraph(fixtureDir("pnpm-multidoc"), "pnpm");
+    expect(bootOnly.inTree).toBe(false);
+    const fromProjectDoc = analyzeNpmGraph(fixtureDir("pnpm-multidoc"), "qs");
+    expect(fromProjectDoc.roots).toEqual([
+      { name: "express", version: "4.18.2", range: "^4.18.2" },
+    ]);
     expect(extraSnapshotFiles(fixtureDir("pnpm-workspace")).sort()).toEqual([
       "apps/web/package.json",
       "packages/ui/package.json",

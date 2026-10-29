@@ -8,6 +8,9 @@ importers:
       left-pad:
         specifier: 1.0.0
         version: 1.0.0
+      express:
+        specifier: ^4.18.2
+        version: 4.18.2
       '@repo/ui':
         specifier: 'workspace:*'
         version: 'link:../../packages/ui'
@@ -20,16 +23,35 @@ importers:
       ms:
         specifier: 2.0.0
         version: 2.0.0
+      fdir:
+        specifier: ^6.5.0
+        version: 6.5.0
 
 packages:
   left-pad@1.0.0:
+    resolution: {integrity: sha512-fake}
+  express@4.18.2:
+    resolution: {integrity: sha512-fake}
+  qs@6.5.0:
     resolution: {integrity: sha512-fake}
   minimist@1.2.0:
     resolution: {integrity: sha512-fake}
   ms@2.0.0:
     resolution: {integrity: sha512-fake}
+  fdir@6.5.0:
+    resolution: {integrity: sha512-fake}
+  picomatch@4.0.7:
+    resolution: {integrity: sha512-fake}
 
 snapshots:
   left-pad@1.0.0: {}
+  express@4.18.2:
+    dependencies:
+      qs: 6.5.0
+  qs@6.5.0: {}
   minimist@1.2.0: {}
   ms@2.0.0: {}
+  fdir@6.5.0(picomatch@4.0.7):
+    optionalDependencies:
+      picomatch: 4.0.7
+  picomatch@4.0.7: {}

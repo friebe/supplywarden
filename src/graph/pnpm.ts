@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parseAllDocuments } from "yaml";
 import type { GraphAnalysis } from "../types.js";
 import { analyzeFlatGraph, emptyGraph, type DirectDep, type FlatNode } from "./flat.js";
 import {
@@ -49,12 +49,8 @@ export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
   const root = findPnpmRoot(cwd) ?? cwd;
   const path = pnpmLockPath(root);
   if (!existsSync(path)) return emptyGraph(pkgName);
-  let lock: PnpmLock;
-  try {
-    lock = parseYaml(readFileSync(path, "utf8")) as PnpmLock;
-  } catch {
-    return emptyGraph(pkgName);
-  }
+  const lock = readPnpmLock(path);
+  if (!lock) return emptyGraph(pkgName);
 
   const nodes = new Map<string, FlatNode>();
   const snapshots = lock.snapshots ?? {};
@@ -64,12 +60,13 @@ export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
   for (const key of keys) {
     const parsed = parsePnpmKey(key);
     if (!parsed) continue;
-    const snap = snapshots[key] ?? packages[key] ?? {};
+    const pkgMeta = packages[key];
+    const snap = snapshots[key];
     const deps = {
-      ...packages[key]?.dependencies,
-      ...snap.dependencies,
-      ...packages[key]?.optionalDependencies,
-      ...snap.optionalDependencies,
+      ...pkgMeta?.dependencies,
+      ...snap?.dependencies,
+      ...pkgMeta?.optionalDependencies,
+      ...snap?.optionalDependencies,
     };
     const node: FlatNode = {
       id: key,
@@ -78,8 +75,11 @@ export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
       deps: Object.entries(deps).map(([name, spec]) => ({ name, spec: String(spec) })),
     };
     nodes.set(key, node);
-    if (!nodes.has(`${parsed.name}@${parsed.version}`)) {
-      nodes.set(`${parsed.name}@${parsed.version}`, node);
+    // A peer snapshot (`foo@1.0.0(bar@2)`) holds the edges. The bare `packages` entry often does not.
+    const short = `${parsed.name}@${parsed.version}`;
+    const previous = nodes.get(short);
+    if (!previous || (previous.deps.length === 0 && node.deps.length > 0)) {
+      nodes.set(short, node);
     }
   }
 
@@ -126,6 +126,33 @@ function pushImporterBag(
       ...(importer ? { importer } : {}),
       ...(catalog ? { catalog: catalog.name } : {}),
     });
+  }
+}
+
+/** The project graph is the last YAML document. A leading boot document only lists pnpm itself. */
+function readPnpmLock(path: string): PnpmLock | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const docs: PnpmLock[] = [];
+    for (const doc of parseAllDocuments(text)) {
+      try {
+        const value = doc.toJS() as PnpmLock | null;
+        if (value && typeof value === "object") docs.push(value);
+      } catch {
+        // Skip a document that does not decode. The project graph may still follow it.
+      }
+    }
+    const project = docs.filter(
+      (doc) => doc.importers || doc.packages || doc.snapshots || doc.dependencies,
+    );
+    return project.at(-1) ?? docs.at(-1);
+  } catch {
+    return undefined;
   }
 }
 
