@@ -1,4 +1,4 @@
-import type { Finding, ReportModel } from "../types.js";
+import type { Advisory, Finding, ReportModel } from "../types.js";
 import { formatDisplayDate, nowIso } from "../util/time.js";
 
 export function emptyReport(cwd: string, title: string): ReportModel {
@@ -52,10 +52,41 @@ export function toMarkdown(report: ReportModel): string {
   return lines.join("\n");
 }
 
+/** Title, vulnerable range, and the version the advisory calls patched. */
+export function advisoryBrief(advisories: Advisory[]): string {
+  return advisories
+    .map((advisory) => {
+      const name = advisory.title?.trim() || advisory.ghsaId || advisory.cveId;
+      const range =
+        advisory.vulnerableRange && advisory.vulnerableRange !== "*"
+          ? advisory.vulnerableRange
+          : undefined;
+      const patched = advisory.patchedVersion ? `patched in ${advisory.patchedVersion}` : undefined;
+      const detail = [range, patched].filter(Boolean).join(", ");
+      if (name && detail) return `${name}: ${detail}`;
+      return name || detail || "";
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** A direct dependency can move to the advisory's patched version without a registry proof. */
+export function withDirectPatch(
+  pkg: string,
+  forced: string | undefined,
+  targets: Array<{ name: string; from?: string; to?: string; skipped?: string[] }>,
+) {
+  if (!forced) return targets;
+  return targets.map((target) =>
+    !target.to && target.name === pkg ? { ...target, to: forced } : target,
+  );
+}
+
 export function findingLines(e: Finding): string[] {
   const severity = e.severity !== "unknown" ? `, ${e.severity}` : "";
   const via = e.roots.length ? `, via ${e.roots.join(", ")}` : "";
   const lines = [`${e.package}${severity}${via}`];
+  if (e.advisory) lines.push(e.advisory);
   for (const trail of e.trails ?? []) {
     if (!trail.path.includes("→") && !trail.range) continue;
     const range = trail.range ? ` asks for ${e.package}@${trail.range}` : "";

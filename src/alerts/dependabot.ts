@@ -49,6 +49,7 @@ export function alertToAdvisory(alert: DependabotAlert): Advisory {
   return {
     ghsaId: alert.security_advisory?.ghsa_id,
     cveId: alert.security_advisory?.cve_id ?? undefined,
+    title: alert.security_advisory?.summary,
     severity: normalizeSeverity(alert.security_advisory?.severity),
     vulnerableRange: alert.security_vulnerability?.vulnerable_version_range ?? "*",
     patchedVersion: alert.security_vulnerability?.first_patched_version?.identifier,

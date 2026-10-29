@@ -18,7 +18,7 @@ import { createLiveRegistry } from "../registry/verify.js";
 import { groupUpgradeNote, rootUpgradeCommands } from "../fix/upgrade-command.js";
 import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
 import { specFloorSafe, specMinVersion } from "../util/semver-spec.js";
-import { findingLines } from "../report/model.js";
+import { advisoryBrief, findingLines, withDirectPatch } from "../report/model.js";
 import { nowIso } from "../util/time.js";
 import type {
   AuditClient,
@@ -68,9 +68,7 @@ export async function runCheck(opts: {
     findings.push(findingForSilentPin(cwd, pin.package, pin.version));
   }
 
-  const actionable = findings.filter(
-    (f) => (f.action === "upgrade" || f.action === "override") && f.commands.length > 0,
-  );
+  const actionable = findings.filter((f) => f.action === "upgrade" || f.action === "override");
   const messages = findings.flatMap((f) => findingLines(f));
   if (!findings.length) {
     messages.push(
@@ -155,23 +153,26 @@ function toFinding(
     dependencyKind: graph.dependencyKind,
     action: decision.strategy,
     summary: decision.reason,
+    advisory: advisoryBrief(group.advisories) || undefined,
     commands: [],
     forcedVersion: decision.forcedVersion,
     upgradeTargets: decision.upgradeTargets,
   };
 
   if (decision.strategy === "upgrade") {
-    const resolved = rootUpgradeCommands(pm, decision.upgradeTargets ?? []).map((c) => c.display);
-    const commands = resolved.length ? resolved : [`supplywarden why ${group.package}`];
-    const bump = formatUpgradeTargets(decision);
-    const note = breakingUpgradeNote(decision);
-    const together = groupUpgradeNote(decision.upgradeTargets ?? []);
+    const forced = decision.forcedVersion ?? group.forcedVersion;
+    const targets = withDirectPatch(group.package, forced, decision.upgradeTargets ?? []);
+    const commands = rootUpgradeCommands(pm, targets).map((c) => c.display);
+    const bump = formatUpgradeTargets({ ...decision, upgradeTargets: targets });
+    const noted = { ...decision, upgradeTargets: targets };
+    const note = breakingUpgradeNote(noted);
+    const together = groupUpgradeNote(targets);
     const rejected = rangeRejectionNote({
       pkg: group.package,
-      version: decision.forcedVersion ?? group.forcedVersion ?? "",
+      version: forced ?? "",
       dependers: graph.dependers,
       strategy: "upgrade",
-      upgradeTargets: decision.upgradeTargets,
+      upgradeTargets: targets,
     });
     const proven = bump ? bump : "No published root version was proven to close the advisory.";
     return {

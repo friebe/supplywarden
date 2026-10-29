@@ -239,6 +239,7 @@
           if (entry.dependencyKind && entry.dependencyKind !== "production") action.append(el("div", "sub", entry.dependencyKind));
           const from = viaCell(entry);
           const done = el("td", "do");
+          if (entry.advisory) done.append(el("div", "sub", entry.advisory));
           const command = (entry.commands || [])[0];
           if (command) done.append(el("code", "", command));
           const why = firstSentence(entry.summary);

@@ -22,6 +22,8 @@ export type PackageManager = "npm" | "pnpm" | "yarn";
 export type Advisory = {
   ghsaId?: string;
   cveId?: string;
+  /** npm audit title, when the audit named one. */
+  title?: string;
   severity: Severity;
   vulnerableRange: string;
   patchedVersion?: string;
@@ -136,6 +138,8 @@ export type Finding = {
   dependencyKind?: DependencyKind;
   action: Action;
   summary: string;
+  /** What the audit says is wrong, including the range and the patched version. */
+  advisory?: string;
   commands: string[];
   forcedVersion?: string;
   upgradeTargets?: UpgradeTarget[];
