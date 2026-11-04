@@ -95,6 +95,7 @@ export async function runFix(opts: {
         vulnPackage: group.package,
         advisories: group.advisories,
         chains: graph.chains,
+        dependers: graph.dependers,
         dependencyKind: kind,
         directs: graph.directs,
         pinDevelopment: config.pinDevelopment,

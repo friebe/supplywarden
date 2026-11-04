@@ -5,7 +5,11 @@ import { nowIso } from "../util/time.js";
 import { extraSnapshotFiles } from "../graph/workspace.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { createLiveInstall } from "../install/client.js";
-import { quotedUpgradeCommands, rootUpgradeCommands } from "./upgrade-command.js";
+import {
+  lockfileRefreshCommand,
+  quotedUpgradeCommands,
+  rootUpgradeCommands,
+} from "./upgrade-command.js";
 import {
   breakingPinNote,
   breakingUpgradeNote,
@@ -57,6 +61,10 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
       report,
       messages: ["Not writing package.json — no patched version that closes the advisory"],
     };
+  }
+
+  if (decision.strategy === "refresh") {
+    return applyLockfileRefresh(opts, forcedVersion);
   }
 
   const existing = readPins(cwd);
@@ -160,6 +168,66 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     report: { ...report, title: `Applied ${group.package}@${forcedVersion}` },
     messages,
     writtenFiles: ["package.json"],
+  };
+}
+
+async function applyLockfileRefresh(
+  opts: ApplyOptions,
+  forcedVersion: string,
+): Promise<CommandResult> {
+  const { cwd, decision, group } = opts;
+  const command = lockfileRefreshCommand(resolvePackageManager(cwd), group.package);
+  const report = baseReport(opts, [], "Lockfile refresh");
+
+  if (!opts.apply) {
+    return {
+      exitCode: 0,
+      report,
+      messages: [`Dry-run: run \`${command.display}\` before changing a root or writing an override.`],
+    };
+  }
+
+  if (opts.skipInstall || !opts.install?.runCommand) {
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Lockfile refresh needs install" },
+      messages: [`Not updating the lockfile — run \`${command.display}\`.`],
+    };
+  }
+
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, ...extraSnapshotFiles(cwd)]);
+  const refreshed = await opts.install.runCommand(cwd, command.file, command.args);
+  if (!refreshed.ok) {
+    restoreFiles(cwd, snap);
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Lockfile refresh failed" },
+      messages: [refreshed.error ?? `${command.display} failed`],
+    };
+  }
+
+  const post = await runPostVerify({
+    cwd,
+    pkg: group.package,
+    forcedVersion,
+    advisories: group.advisories,
+    audit: opts.audit,
+  });
+  const blocked = blockingIssues(post);
+  if (blocked.length) {
+    restoreFiles(cwd, snap);
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Lockfile refresh did not close advisory", validation: post },
+      messages: blocked.map((issue) => issue.message),
+    };
+  }
+
+  return {
+    exitCode: 0,
+    report: { ...report, title: `Refreshed ${group.package}@${forcedVersion}` },
+    messages: [`${command.display} closed the advisory. No root upgrade or override was needed.`],
+    writtenFiles: PROJECT_SNAPSHOT_FILES.filter((file) => file.endsWith("lock.yaml") || file.endsWith("lock.json")),
   };
 }
 

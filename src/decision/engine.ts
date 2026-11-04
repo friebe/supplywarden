@@ -29,6 +29,7 @@ export type UpgradeProofContext = {
   vulnPackage: string;
   advisories: Advisory[];
   chains: DependencyChain[];
+  dependers?: Depender[];
   dependencyKind?: DependencyKind;
   directs?: Array<{ name: string; version: string }>;
   /** When false, a non-critical dev or optional tree waits instead of pinning. Default: pin. */
@@ -74,6 +75,8 @@ export function decide(opts: {
   config: SupplywardenConfig;
 }): Decision {
   const forcedVersion = firstSafeForcedVersion(opts.advisories);
+  const refreshable =
+    forcedVersion && canRefreshTransitive(opts.graph, opts.advisories, forcedVersion);
   const rootCount = opts.graph.roots.length || 1;
   const kind = opts.graph.dependencyKind;
   const severity = maxAdvisorySeverity(opts.advisories);
@@ -93,6 +96,16 @@ export function decide(opts: {
   const threshold = opts.config.upgradeRootThreshold;
   const tree =
     kind === "development" || kind === "optional" ? `${kind} dependency` : "production dependency";
+
+  if (refreshable) {
+    return {
+      strategy: "refresh",
+      reason: `${forcedVersion} satisfies every immediate parent range. Refresh the lockfile before changing a root or writing an override.`,
+      forcedVersion,
+      scope,
+      scopes,
+    };
+  }
 
   if (strategy === "upgrade") {
     return {
@@ -137,6 +150,27 @@ export function decide(opts: {
     scope,
     scopes,
   };
+}
+
+function canRefreshTransitive(
+  graph: GraphAnalysis,
+  advisories: Advisory[],
+  forcedVersion: string,
+): boolean {
+  const vulnerableDirect = graph.roots.some(
+    (root) => root.name === graph.package && stillVulnerable(root.version, advisories),
+  );
+  const vulnerableParents = new Set(
+    graph.chains
+      .filter((chain) => stillVulnerable(chain.version, advisories) && chain.path.length > 1)
+      .map((chain) => stripVersion(chain.path[chain.path.length - 2]!)),
+  );
+  const dependers = graph.dependers?.filter((depender) => vulnerableParents.has(depender.parent));
+  return (
+    !vulnerableDirect &&
+    Boolean(dependers?.length) &&
+    dependers!.every((depender) => rangeAccepts(depender.range, forcedVersion))
+  );
 }
 
 export function formatUpgradeTarget(t: {
@@ -252,6 +286,19 @@ export async function resolveUpgradeDecision(
   lookup: UpgradeLookup = {},
   proof?: UpgradeProofContext,
 ): Promise<Decision> {
+  if (
+    proof &&
+    decision.forcedVersion &&
+    (await currentTreeCanRefresh(proof, decision.forcedVersion, lookup))
+  ) {
+    return {
+      strategy: "refresh",
+      reason: `${decision.forcedVersion} satisfies every immediate parent range. Refresh the lockfile before changing a root or writing an override.`,
+      forcedVersion: decision.forcedVersion,
+      scope: decision.scope,
+      scopes: decision.scopes,
+    };
+  }
   if (decision.strategy === "wait") return decision;
   if (decision.strategy !== "upgrade" || !decision.upgradeTargets?.length) return decision;
   if (!hasLookup(lookup)) return decision;
@@ -317,6 +364,42 @@ export async function resolveUpgradeDecision(
   }
 
   return { ...decision, upgradeTargets: targets };
+}
+
+async function currentTreeCanRefresh(
+  proof: UpgradeProofContext,
+  forcedVersion: string,
+  lookup: UpgradeLookup,
+): Promise<boolean> {
+  if (!lookup.dependencyRange) return false;
+  const parents = new Map<string, { name: string; version: string }>();
+  for (const chain of proof.chains) {
+    if (!stillVulnerable(chain.version, proof.advisories)) continue;
+    if (chain.path.length < 2) return false;
+    const parent = parseSegment(chain.path[chain.path.length - 2]!);
+    if (!parent) return false;
+    parents.set(`${parent.name}\0${parent.version}`, parent);
+  }
+  if (!parents.size) return false;
+  for (const parent of parents.values()) {
+    const publishedRange = await lookup.dependencyRange(
+      parent.name,
+      parent.version,
+      proof.vulnPackage,
+    );
+    const knownRange = proof.dependers?.find(
+      (depender) => depender.parent === parent.name && depender.version === parent.version,
+    )?.range;
+    const range = publishedRange ?? knownRange;
+    if (!range || !rangeAccepts(range, forcedVersion)) return false;
+  }
+  return true;
+}
+
+function parseSegment(segment: string): { name: string; version: string } | undefined {
+  const at = segment.lastIndexOf("@");
+  if (at <= 0 || at === segment.length - 1) return undefined;
+  return { name: segment.slice(0, at), version: segment.slice(at + 1) };
 }
 
 function hasLookup(lookup: UpgradeLookup): boolean {

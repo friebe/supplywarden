@@ -12,7 +12,7 @@ export type RootUpgradeCommand = {
   file: string;
   args: string[];
   display: string;
-  kind: "nx" | "migrate" | "install" | "catalog";
+  kind: "nx" | "migrate" | "install" | "catalog" | "refresh";
 };
 
 type MigrateTool = {
@@ -101,6 +101,34 @@ export function rootUpgradeCommand(
 
 export function quotedUpgradeCommands(commands: RootUpgradeCommand[]): string {
   return commands.map((c) => `\`${c.display}\``).join(" then ");
+}
+
+export function lockfileRefreshCommand(
+  pm: PackageManager,
+  pkg: string,
+): RootUpgradeCommand {
+  if (pm === "pnpm") {
+    return {
+      file: "pnpm",
+      args: ["update", "--recursive", pkg],
+      display: `pnpm update --recursive ${pkg}`,
+      kind: "refresh",
+    };
+  }
+  if (pm === "npm") {
+    return {
+      file: "npm",
+      args: ["update", pkg, "--depth", "Infinity"],
+      display: `npm update ${pkg} --depth Infinity`,
+      kind: "refresh",
+    };
+  }
+  return {
+    file: "yarn",
+    args: ["upgrade", pkg],
+    display: `yarn upgrade ${pkg}`,
+    kind: "refresh",
+  };
 }
 
 function nxMigrateCommand(nx: UpgradeTarget): RootUpgradeCommand {

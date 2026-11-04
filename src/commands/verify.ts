@@ -11,7 +11,7 @@ import { deleteOverrideFromManifest } from "../metadata/sync.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
 import { createLiveInstall } from "../install/client.js";
 import { createLiveRegistry } from "../registry/verify.js";
-import { rootUpgradeCommands } from "../fix/upgrade-command.js";
+import { lockfileRefreshCommand, rootUpgradeCommands } from "../fix/upgrade-command.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
 import { nowIso } from "../util/time.js";
 import { loadConfig } from "../config.js";
@@ -131,6 +131,7 @@ export async function runVerify(opts: {
           vulnPackage: pin.package,
           advisories: groupAdvisories,
           chains: graph.chains,
+          dependers: graph.dependers,
           dependencyKind: graph.dependencyKind,
           directs: graph.directs,
           pinDevelopment: config.pinDevelopment,
@@ -140,7 +141,9 @@ export async function runVerify(opts: {
       const commands =
         decision.strategy === "upgrade"
           ? rootUpgradeCommands(pm, decision.upgradeTargets ?? []).map((c) => c.display)
-          : [`supplywarden why ${pin.package}`];
+          : decision.strategy === "refresh"
+            ? [lockfileRefreshCommand(pm, pin.package).display]
+            : [`supplywarden why ${pin.package}`];
       const why = auditResult.error
         ? `audit failed: ${auditResult.error}`
         : "audit still reports it";
@@ -152,7 +155,7 @@ export async function runVerify(opts: {
         installed: graph.versions,
         roots: graph.roots.map((r) => `${r.name}@${r.version}`),
         chains: graph.chains.map((c) => c.path.join(" → ")),
-        action: decision.strategy === "upgrade" ? "upgrade" : "override",
+        action: decision.strategy === "wait" ? "override" : decision.strategy,
         forcedVersion: pin.version,
         upgradeTargets: decision.upgradeTargets,
         summary: `Keep the override — ${why}.${bump ? ` ${bump}.` : ""}`,

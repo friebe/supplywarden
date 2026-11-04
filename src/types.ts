@@ -1,8 +1,8 @@
 export type Severity = "critical" | "high" | "medium" | "low" | "unknown";
 
-export type Strategy = "override" | "upgrade" | "wait";
+export type Strategy = "refresh" | "override" | "upgrade" | "wait";
 
-export type Action = "upgrade" | "override" | "wait" | "keep" | "drop";
+export type Action = "refresh" | "upgrade" | "override" | "wait" | "keep" | "drop";
 
 export type ValidationCode =
   | "VERSION_NOT_FOUND"

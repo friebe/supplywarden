@@ -16,7 +16,11 @@ import { analyzeNpmGraph, resolvePackageManager } from "../graph/npm.js";
 import { resolveProjectDir } from "../graph/workspace.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
 import { createLiveRegistry } from "../registry/verify.js";
-import { groupUpgradeNote, rootUpgradeCommands } from "../fix/upgrade-command.js";
+import {
+  groupUpgradeNote,
+  lockfileRefreshCommand,
+  rootUpgradeCommands,
+} from "../fix/upgrade-command.js";
 import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
 import { specFloorSafe, specMinVersion } from "../util/semver-spec.js";
 import { advisoryBrief, findingLines, withDirectPatch } from "../report/model.js";
@@ -69,7 +73,9 @@ export async function runCheck(opts: {
     findings.push(findingForSilentPin(cwd, pin.package, pin.version));
   }
 
-  const actionable = findings.filter((f) => f.action === "upgrade" || f.action === "override");
+  const actionable = findings.filter(
+    (f) => f.action === "refresh" || f.action === "upgrade" || f.action === "override",
+  );
   const messages = findings.flatMap((f) => findingLines(f));
   if (!findings.length) {
     messages.push(
@@ -86,6 +92,7 @@ export async function runCheck(opts: {
       cwd,
       summary: {
         findings: findings.length,
+        refresh: findings.filter((f) => f.action === "refresh").length,
         upgrade: findings.filter((f) => f.action === "upgrade").length,
         override: findings.filter((f) => f.action === "override").length,
         keep: findings.filter((f) => f.action === "keep").length,
@@ -208,6 +215,14 @@ function toFinding(
       ...base,
       summary: [proven, together, rejected, note].filter(Boolean).join(" "),
       commands,
+    };
+  }
+
+  if (decision.strategy === "refresh") {
+    return {
+      ...base,
+      summary: decision.reason,
+      commands: [lockfileRefreshCommand(pm, group.package).display],
     };
   }
 

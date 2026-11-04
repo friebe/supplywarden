@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vite-plus/test";
-import { isNxCli, rootUpgradeCommand, rootUpgradeCommands } from "../../src/fix/upgrade-command.js";
+import {
+  isNxCli,
+  lockfileRefreshCommand,
+  rootUpgradeCommand,
+  rootUpgradeCommands,
+} from "../../src/fix/upgrade-command.js";
 
 describe("rootUpgradeCommand", () => {
+  it("refreshes a transitive package across a pnpm workspace", () => {
+    expect(lockfileRefreshCommand("pnpm", "zod")).toEqual({
+      file: "pnpm",
+      args: ["update", "--recursive", "zod"],
+      display: "pnpm update --recursive zod",
+      kind: "refresh",
+    });
+  });
+
   it("uses npm/pnpm/yarn for any non-nx root", () => {
     expect(rootUpgradeCommand("npm", [{ name: "express", from: "4.18.2", to: "4.21.2" }])).toEqual({
       file: "npm",

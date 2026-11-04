@@ -124,6 +124,100 @@ describe("decision engine", () => {
   it("stays quiet when the pin keeps the same major", () => {
     expect(breakingPinNote("undici", ["7.28.0"], "7.30.1")).toBeUndefined();
   });
+
+  it("refreshes the lockfile when every parent already accepts the patched version", () => {
+    const decision = decide({
+      graph: {
+        package: "zod",
+        versions: ["4.6.5"],
+        inTree: true,
+        roots: [{ name: "@angular/forms", version: "22.2.3" }],
+        chains: [
+          {
+            path: ["@angular/forms@22.2.3", "zod@4.6.5"],
+            package: "zod",
+            version: "4.6.5",
+          },
+        ],
+        dependerRanges: ["^4.0.10"],
+        dependers: [{ parent: "@angular/forms", range: "^4.0.10", version: "22.2.3" }],
+      },
+      advisories: [{ severity: "high", vulnerableRange: "<4.6.6", patchedVersion: "4.6.6" }],
+      config: DEFAULT_CONFIG,
+    });
+
+    expect(decision.strategy).toBe("refresh");
+    expect(decision.reason).toMatch(/Refresh the lockfile/);
+  });
+
+  it("proves a refresh from the published parent range when pnpm stores an exact resolution", async () => {
+    const decision: Decision = {
+      strategy: "override",
+      reason: "too many roots",
+      forcedVersion: "4.6.6",
+      scope: { type: "scoped", parent: "@angular/forms" },
+    };
+    const resolved = await resolveUpgradeDecision(
+      decision,
+      {
+        async dependencyRange(parent, version, dependency) {
+          expect([parent, version, dependency]).toEqual(["@angular/forms", "22.2.3", "zod"]);
+          return "^4.0.10";
+        },
+      },
+      {
+        vulnPackage: "zod",
+        advisories: [
+          { severity: "high", vulnerableRange: "<4.6.6", patchedVersion: "4.6.6" },
+        ],
+        chains: [
+          {
+            path: ["@angular/forms@22.2.3", "zod@4.6.5"],
+            package: "zod",
+            version: "4.6.5",
+          },
+        ],
+        dependers: [{ parent: "@angular/forms", range: "4.6.5", version: "22.2.3" }],
+      },
+    );
+
+    expect(resolved.strategy).toBe("refresh");
+  });
+
+  it("ignores a safe copy whose parent rejects the patch when refreshing vulnerable copies", () => {
+    const decision = decide({
+      graph: {
+        package: "zod",
+        versions: ["4.6.7", "4.6.5"],
+        inTree: true,
+        roots: [
+          { name: "safe-parent", version: "1.0.0" },
+          { name: "@angular/forms", version: "22.2.3" },
+        ],
+        chains: [
+          {
+            path: ["safe-parent@1.0.0", "zod@4.6.7"],
+            package: "zod",
+            version: "4.6.7",
+          },
+          {
+            path: ["@angular/forms@22.2.3", "zod@4.6.5"],
+            package: "zod",
+            version: "4.6.5",
+          },
+        ],
+        dependerRanges: ["4.6.7", "^4.0.10"],
+        dependers: [
+          { parent: "safe-parent", range: "4.6.7", version: "1.0.0" },
+          { parent: "@angular/forms", range: "^4.0.10", version: "22.2.3" },
+        ],
+      },
+      advisories: [{ severity: "high", vulnerableRange: "<4.6.6", patchedVersion: "4.6.6" }],
+      config: DEFAULT_CONFIG,
+    });
+
+    expect(decision.strategy).toBe("refresh");
+  });
 });
 
 describe("advisory grouping", () => {
@@ -336,7 +430,7 @@ describe("upgrade targets", () => {
         getLatestMatching: async () => "23.4.1",
         dependencyRange: async (pkg, version, dep) => {
           if (pkg === "nx" && dep === "smol-toml" && version === "23.4.1") return "^1.4.2";
-          return "^1.3.0";
+          return "~1.3.0";
         },
       },
       smolTomlProof("23.3.0"),

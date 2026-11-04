@@ -35,6 +35,38 @@ async function nxProject(): Promise<string> {
   return dir;
 }
 
+async function pnpmRefreshProject(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "supplywarden-refresh-"));
+  dirs.push(dir);
+  await writeFile(
+    join(dir, "package.json"),
+    `${JSON.stringify({ name: "app", private: true, dependencies: { express: "^4.18.2" } }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(dir, "pnpm-lock.yaml"),
+    `lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      express:
+        specifier: ^4.18.2
+        version: 4.18.2
+
+packages:
+  express@4.18.2: {}
+  qs@6.5.0: {}
+
+snapshots:
+  express@4.18.2:
+    dependencies:
+      qs: ^6.0.0
+  qs@6.5.0: {}
+`,
+  );
+  return dir;
+}
+
 const group: PackageAlertGroup = {
   package: "smol-toml",
   manifestPath: "package.json",
@@ -62,6 +94,90 @@ const decision = {
 };
 
 describe("applyFix root upgrade", () => {
+  it("suggests a lockfile refresh without writing an override", async () => {
+    const cwd = await nxProject();
+    await writeFile(join(cwd, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const result = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group: { ...group, package: "zod", forcedVersion: "4.6.6" },
+      graph: { ...graph, package: "zod", versions: ["4.6.5"] },
+      decision: {
+        strategy: "refresh",
+        reason: "the parent range accepts the patch",
+        forcedVersion: "4.6.6",
+        scope: { type: "scoped", parent: "@angular/forms" },
+      },
+      apply: false,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.messages.join("\n")).toMatch(/pnpm update --recursive zod/);
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+    expect(pkg.pnpm?.overrides).toBeUndefined();
+  });
+
+  it("applies and verifies a pnpm lockfile refresh without writing an override", async () => {
+    const cwd = await pnpmRefreshProject();
+    const calls: Array<{ file: string; args: string[] }> = [];
+    const result = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group: {
+        package: "qs",
+        manifestPath: "package.json",
+        advisories: [{ severity: "high", vulnerableRange: "<6.11.2", patchedVersion: "6.11.2" }],
+        maxSeverity: "high",
+        forcedVersion: "6.11.2",
+        mergedVulnerableRange: "<6.11.2",
+      },
+      graph: {
+        package: "qs",
+        versions: ["6.5.0"],
+        inTree: true,
+        roots: [{ name: "express", version: "4.18.2" }],
+        chains: [
+          { path: ["express@4.18.2", "qs@6.5.0"], package: "qs", version: "6.5.0" },
+        ],
+        dependerRanges: ["^6.0.0"],
+        dependers: [{ parent: "express", range: "^6.0.0", version: "4.18.2" }],
+      },
+      decision: {
+        strategy: "refresh",
+        reason: "the parent range accepts the patch",
+        forcedVersion: "6.11.2",
+        scope: { type: "scoped", parent: "express" },
+      },
+      apply: true,
+      skipInstall: false,
+      audit: {
+        async audit() {
+          return { vulnerabilities: [] };
+        },
+      },
+      install: {
+        async install() {
+          return { ok: true };
+        },
+        async runCommand(_cwd, file, args) {
+          calls.push({ file, args });
+          const lockPath = join(cwd, "pnpm-lock.yaml");
+          const lock = await readFile(lockPath, "utf8");
+          await writeFile(lockPath, lock.replaceAll("6.5.0", "6.11.2"));
+          return { ok: true };
+        },
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(calls).toEqual([
+      { file: "pnpm", args: ["update", "--recursive", "qs"] },
+    ]);
+    expect(result.messages.join("\n")).toMatch(/No root upgrade or override was needed/);
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+    expect(pkg.pnpm?.overrides).toBeUndefined();
+  });
+
   it("suggests nx migrate and does not run it by default", async () => {
     const cwd = await nxProject();
     const calls: Array<{ file: string; args: string[] }> = [];

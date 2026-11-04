@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { createStaticAudit } from "../../src/audit/client.js";
@@ -60,6 +60,41 @@ describe("check", () => {
       },
     });
     expect(result.exitCode).toBe(1);
+  });
+
+  it("reports a refresh as actionable without changing the lockfile", async () => {
+    await withFixture("pnpm-simple", async (cwd) => {
+      const lockPath = join(cwd, "pnpm-lock.yaml");
+      const before = await readFile(lockPath, "utf8");
+      const result = await runCheck({
+        cwd,
+        strict: true,
+        audit: createStaticAudit([qs]),
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+          async dependencyRange(parent, version, dependency) {
+            if (
+              dependency === "qs" &&
+              ((parent === "express" && version === "4.18.2") ||
+                (parent === "body-parser" && version === "1.20.1"))
+            ) {
+              return "^6.0.0";
+            }
+            return undefined;
+          },
+        },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.report.summary.refresh).toBe(1);
+      expect(result.report.entries[0]?.action).toBe("refresh");
+      expect(result.report.entries[0]?.commands).toContain(
+        "pnpm update --recursive qs",
+      );
+      expect(await readFile(lockPath, "utf8")).toBe(before);
+    });
   });
 });
 
@@ -533,5 +568,32 @@ describe("doctor / html", () => {
     const html = renderHtml(result.report);
     expect(html).toMatch(/supplywarden-data/);
     expect(html).toMatch(/"package":"qs"/);
+  });
+
+  it("keeps refresh findings in the HTML to-do list", async () => {
+    const result = await runCheck({
+      cwd: fixtureDir("pnpm-simple"),
+      audit: createStaticAudit([qs]),
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+        async dependencyRange(parent, version, dependency) {
+          if (
+            dependency === "qs" &&
+            ((parent === "express" && version === "4.18.2") ||
+              (parent === "body-parser" && version === "1.20.1"))
+          ) {
+            return "^6.0.0";
+          }
+          return undefined;
+        },
+      },
+    });
+
+    expect(result.report.entries[0]?.action).toBe("refresh");
+    const html = renderHtml(result.report);
+    expect(html).toMatch(/todoActions = new Set\(\["refresh", "upgrade", "override", "wait"\]\)/);
+    expect(html).toMatch(/"action":"refresh"/);
   });
 });
