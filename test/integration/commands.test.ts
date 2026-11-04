@@ -258,7 +258,7 @@ describe("why / fix", () => {
     expect(row?.commands.join("\n")).toBe("npm install @demo/core@1.2.0 @demo/common@1.2.0");
   });
 
-  it("pins under the parent when no published root closes the advisory", async () => {
+  it("sends a parent-breaking pin to triage when no published root closes the advisory", async () => {
     const cwd = fixtureDir("npm-mixed");
     const result = await runCheck({
       cwd,
@@ -273,11 +273,11 @@ describe("why / fix", () => {
       registry: createLiveRegistry(cwd),
     });
     const row = result.report.entries.find((entry) => entry.package === "marked");
-    expect(row?.action).toBe("override");
-    expect(row?.summary).toMatch(/under old-tool/);
+    expect(row?.action).toBe("triage");
     expect(row?.summary).toMatch(/old-tool@1\.0\.0 asks for marked@1\.0\.0/);
     expect(row?.summary).toMatch(/That parent can fail to build/);
-    expect(row?.commands).toEqual(["supplywarden fix marked --apply"]);
+    expect(row?.summary).toMatch(/human decision/);
+    expect(row?.commands).toEqual(["supplywarden why marked"]);
   });
 
   it("tells you to upgrade the root when the safe version is outside the installed range", async () => {
@@ -377,10 +377,6 @@ describe("why / fix", () => {
 
   it("writes only the named package", async () => {
     await withFixture("npm-simple", async (dir) => {
-      await writeFile(
-        join(dir, ".supplywardenrc.json"),
-        JSON.stringify({ upgradeRootThreshold: 0 }),
-      );
       const result = await runFix({
         cwd: dir,
         package: "qs",
@@ -399,6 +395,11 @@ describe("why / fix", () => {
         registry: {
           async verifyPackageVersion() {
             return { exists: true, deprecated: null };
+          },
+          // No newer express release is proven to close qs, so the root-upgrade attempt
+          // falls through to the scoped pin, well within the default threshold.
+          async versionsNewerThan() {
+            return [];
           },
         },
       });
@@ -426,9 +427,51 @@ describe("why / fix", () => {
 describe("validation gates", () => {
   it("writes a safe override when the patched version is still inside the range", async () => {
     await withFixture("npm-still-vulnerable", async (dir) => {
+      // The fixture's own threshold is 0 (always triage); raise it so a lone, non-breaking
+      // pin is still allowed through once the root-upgrade attempt below finds no candidate.
       await writeFile(
         join(dir, ".supplywardenrc.json"),
-        JSON.stringify({ upgradeRootThreshold: 0 }),
+        JSON.stringify({ upgradeRootThreshold: 1 }),
+      );
+      const result = await runFix({
+        cwd: dir,
+        audit: createStaticAudit([
+          {
+            package: "uuid",
+            severity: "high",
+            range: "< 9.5.0",
+            ghsaId: "GHSA-uuid-bad",
+            patchedVersion: "9.2.0",
+          },
+        ]),
+        apply: true,
+        skipInstall: true,
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+          // No newer uuid release closes the advisory, so the root-upgrade attempt falls
+          // through to a pin — one non-breaking, same-major override, well within threshold.
+          async versionsNewerThan() {
+            return [];
+          },
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.messages.join("\n")).toMatch(/uuid@9\.5\.0/);
+      const pkg = readPackageJson(dir);
+      expect(pkg.overrides?.uuid).toBe("9.5.0");
+      expect(existsSync(join(dir, "security-metadata.json"))).toBe(false);
+    });
+  });
+
+  it("sends a breaking major pin to triage instead of writing it automatically", async () => {
+    await withFixture("npm-still-vulnerable", async (dir) => {
+      // Raise the fixture's default threshold of 0 so the only thing that blocks this pin
+      // is its own major-version jump, not the parent-count gate.
+      await writeFile(
+        join(dir, ".supplywardenrc.json"),
+        JSON.stringify({ upgradeRootThreshold: 1 }),
       );
       const result = await runFix({
         cwd: dir,
@@ -437,7 +480,7 @@ describe("validation gates", () => {
             package: "uuid",
             severity: "high",
             range: "< 11.1.1",
-            ghsaId: "GHSA-uuid-bad",
+            ghsaId: "GHSA-uuid-major",
             patchedVersion: "10.0.0",
           },
         ]),
@@ -447,13 +490,17 @@ describe("validation gates", () => {
           async verifyPackageVersion() {
             return { exists: true, deprecated: null };
           },
+          async versionsNewerThan() {
+            return [];
+          },
         },
       });
       expect(result.exitCode).toBe(0);
-      expect(result.messages.join("\n")).toMatch(/uuid@11\.1\.1/);
+      expect(result.messages.join("\n")).toMatch(/TRIAGE/);
+      expect(result.messages.join("\n")).toMatch(/Breaking major pin: uuid@9\.0\.0 → 11\.1\.1/);
+      expect(result.messages.join("\n")).toMatch(/human decision/);
       const pkg = readPackageJson(dir);
-      expect(pkg.overrides?.uuid).toBe("11.1.1");
-      expect(existsSync(join(dir, "security-metadata.json"))).toBe(false);
+      expect(pkg.overrides?.uuid).toBeUndefined();
     });
   });
 
@@ -521,10 +568,6 @@ describe("validation gates", () => {
 
   it("applies an override into package.json only", async () => {
     await withFixture("npm-simple", async (dir) => {
-      await writeFile(
-        join(dir, ".supplywardenrc.json"),
-        JSON.stringify({ upgradeRootThreshold: 0 }),
-      );
       const result = await runFix({
         cwd: dir,
         audit: createStaticAudit([qs]),
@@ -533,6 +576,9 @@ describe("validation gates", () => {
         registry: {
           async verifyPackageVersion() {
             return { exists: true, deprecated: null };
+          },
+          async versionsNewerThan() {
+            return [];
           },
         },
       });
@@ -593,7 +639,7 @@ describe("doctor / html", () => {
 
     expect(result.report.entries[0]?.action).toBe("refresh");
     const html = renderHtml(result.report);
-    expect(html).toMatch(/todoActions = new Set\(\["refresh", "upgrade", "override", "wait"\]\)/);
+    expect(html).toMatch(/todoActions = new Set\(\["refresh", "upgrade", "override", "triage"\]\)/);
     expect(html).toMatch(/"action":"refresh"/);
   });
 });

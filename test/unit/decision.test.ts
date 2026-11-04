@@ -35,7 +35,7 @@ describe("decision engine", () => {
     ).toBe("override");
   });
 
-  it("waits for a non-critical development tree when pinDevelopment is off", () => {
+  it("sends a non-critical development tree to triage when pinDevelopment is off", () => {
     expect(
       recommend({
         rootCount: 5,
@@ -45,10 +45,10 @@ describe("decision engine", () => {
         severity: "high",
         pinDevelopment: false,
       }),
-    ).toBe("wait");
+    ).toBe("triage");
   });
 
-  it("does not wait for critical, even on a development tree", () => {
+  it("does not send critical to triage, even on a development tree", () => {
     expect(
       recommend({
         rootCount: 5,
@@ -84,7 +84,7 @@ describe("decision engine", () => {
     expect(decision.forcedVersion).toBe("4.0.4");
   });
 
-  it("decides wait on a high-severity development tree when pinDevelopment is off", () => {
+  it("sends a high-severity development tree to triage when pinDevelopment is off", () => {
     const decision = decide({
       graph: {
         package: "picomatch",
@@ -103,7 +103,7 @@ describe("decision engine", () => {
       advisories: [{ severity: "high", vulnerableRange: "< 4.0.4", patchedVersion: "4.0.4" }],
       config: { ...DEFAULT_CONFIG, pinDevelopment: false },
     });
-    expect(decision.strategy).toBe("wait");
+    expect(decision.strategy).toBe("triage");
     expect(decision.reason).toMatch(/more than the threshold of 3/);
     expect(decision.reason).toMatch(/development dependency/);
     expect(decision.reason).toMatch(/No root upgrade and no pin/);
@@ -484,7 +484,7 @@ describe("upgrade targets", () => {
     expect(next.reason).toMatch(/no published version that closes smol-toml/);
   });
 
-  it("waits instead of overriding when a development-tree upgrade cannot be proven", async () => {
+  it("sends a development-tree upgrade to triage instead of overriding when it cannot be proven", async () => {
     const registry = createOfflineRegistry(
       {
         nx: ["23.2.0", "23.2.1"],
@@ -501,7 +501,7 @@ describe("upgrade targets", () => {
       dependencyKind: "development",
       pinDevelopment: false,
     });
-    expect(next.strategy).toBe("wait");
+    expect(next.strategy).toBe("triage");
     expect(next.reason).toMatch(/no published version that closes smol-toml/);
     expect(next.reason).toMatch(/development dependency, not critical/);
   });

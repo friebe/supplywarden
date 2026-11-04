@@ -48,8 +48,8 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   const { cwd, group, graph, decision } = opts;
   const reportEarly = baseReport(opts, [], "Pre-apply validation");
 
-  if (decision.strategy === "wait") {
-    return applyWait(opts, reportEarly);
+  if (decision.strategy === "triage") {
+    return applyTriage(opts, reportEarly);
   }
 
   const forcedVersion = decision.forcedVersion ?? group.forcedVersion;
@@ -247,12 +247,12 @@ function noteBreakingUpgradeSkip(messages: string[], decision: Decision) {
   if (note) messages.push(note);
 }
 
-function applyWait(opts: ApplyOptions, report: ReportModel): CommandResult {
+function applyTriage(opts: ApplyOptions, report: ReportModel): CommandResult {
   const { group, decision } = opts;
   return {
     exitCode: 0,
-    report: { ...report, title: `WAIT ${group.package}` },
-    messages: [`WAIT: ${decision.reason}. No override written.`],
+    report: { ...report, title: `TRIAGE ${group.package}` },
+    messages: [`TRIAGE: ${decision.reason}`],
   };
 }
 

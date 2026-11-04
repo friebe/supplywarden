@@ -99,6 +99,7 @@ export async function runFix(opts: {
         dependencyKind: kind,
         directs: graph.directs,
         pinDevelopment: config.pinDevelopment,
+        threshold: config.upgradeRootThreshold,
       },
     );
     const result = await applyFix({

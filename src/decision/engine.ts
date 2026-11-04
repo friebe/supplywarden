@@ -32,8 +32,10 @@ export type UpgradeProofContext = {
   dependers?: Depender[];
   dependencyKind?: DependencyKind;
   directs?: Array<{ name: string; version: string }>;
-  /** When false, a non-critical dev or optional tree waits instead of pinning. Default: pin. */
+  /** When false, a non-critical dev or optional tree goes to triage instead of pinning. Default: pin. */
   pinDevelopment?: boolean;
+  /** Roots/parents above this count go to triage instead of an automatic upgrade or override. */
+  threshold?: number;
 };
 
 export function recommend(input: {
@@ -45,12 +47,14 @@ export function recommend(input: {
   pinDevelopment?: boolean;
 }): Strategy {
   if (input.canUpgradeRoots && input.rootCount <= input.threshold) return "upgrade";
-  if (shouldWait(input.kind, input.severity, input.pinDevelopment !== false)) return "wait";
+  if (shouldTriageDevelopment(input.kind, input.severity, input.pinDevelopment !== false)) {
+    return "triage";
+  }
   return "override";
 }
 
-/** Dev/optional trees wait only when `pinDevelopment` is off, and never for a critical advisory. */
-export function shouldWait(
+/** Dev/optional trees go to triage only when `pinDevelopment` is off, and never for a critical advisory. */
+export function shouldTriageDevelopment(
   kind?: DependencyKind,
   severity?: Severity,
   pinDevelopment = true,
@@ -80,10 +84,11 @@ export function decide(opts: {
   const rootCount = opts.graph.roots.length || 1;
   const kind = opts.graph.dependencyKind;
   const severity = maxAdvisorySeverity(opts.advisories);
-  const canUpgrade = Boolean(forcedVersion) && rootCount <= opts.config.upgradeRootThreshold;
+  const threshold = opts.config.upgradeRootThreshold;
+  const canUpgrade = Boolean(forcedVersion) && rootCount <= threshold;
   const strategy = recommend({
     rootCount,
-    threshold: opts.config.upgradeRootThreshold,
+    threshold,
     canUpgradeRoots: canUpgrade,
     kind,
     severity,
@@ -93,7 +98,6 @@ export function decide(opts: {
   const scopes = overrideScopes(opts.graph, opts.advisories);
   const scope = scopes[0] ?? { type: "global" as const };
 
-  const threshold = opts.config.upgradeRootThreshold;
   const tree =
     kind === "development" || kind === "optional" ? `${kind} dependency` : "production dependency";
 
@@ -123,19 +127,49 @@ export function decide(opts: {
     };
   }
 
-  if (strategy === "wait") {
+  if (strategy === "triage") {
     const count =
       rootCount > threshold
         ? `${rootCount} roots, more than the threshold of ${threshold}.`
         : `${rootCount} root(s).`;
     const patch = forcedVersion ? "" : " The advisory names no patched version.";
     return {
-      strategy: "wait",
+      strategy: "triage",
       reason: `${count} This is a ${tree}, severity ${severity}, not critical.${patch} No root upgrade and no pin.`,
       forcedVersion,
       scope,
       scopes,
     };
+  }
+
+  // strategy === "override": only write it automatically when it is non-breaking and scoped to
+  // few enough parents to stay a deliberate, countable pin instead of silent sprawl.
+  if (forcedVersion) {
+    const gate = overrideGate({
+      scopes,
+      installedVersions: opts.graph.versions,
+      forcedVersion,
+      pkg: opts.graph.package,
+      threshold,
+    });
+    if (gate.blocked) {
+      return {
+        strategy: "triage",
+        reason: overrideTriageReason({
+          pkg: opts.graph.package,
+          forcedVersion,
+          scopes,
+          dependers: opts.graph.dependers,
+          installedVersions: opts.graph.versions,
+          breaking: gate.breaking,
+          affected: gate.affected,
+          threshold,
+        }),
+        forcedVersion,
+        scope,
+        scopes,
+      };
+    }
   }
 
   const why = !forcedVersion
@@ -171,6 +205,56 @@ function canRefreshTransitive(
     Boolean(dependers?.length) &&
     dependers!.every((depender) => rangeAccepts(depender.range, forcedVersion))
   );
+}
+
+/**
+ * Gate on whether an override is safe to write automatically: it stays within the installed
+ * major version, and it is scoped to few enough parents that it stays a deliberate, countable
+ * pin instead of silent sprawl. A same-major pin past an exact or narrow parent range (the
+ * ordinary reason `overrides` exists at all) still passes — only a major jump, or fragmenting
+ * across too many parents, goes to triage, where a human decides to accept the risk, wait for
+ * upstream, or write the override by hand.
+ */
+function overrideGate(opts: {
+  scopes: OverrideScope[];
+  installedVersions: string[];
+  forcedVersion: string;
+  pkg: string;
+  threshold: number;
+}): { blocked: boolean; breaking: boolean; affected: number } {
+  const breaking = Boolean(breakingPinSummary(opts.pkg, opts.installedVersions, opts.forcedVersion));
+  const affected = opts.scopes.length;
+  return { blocked: breaking || affected > opts.threshold, breaking, affected };
+}
+
+/** Explains why an override was sent to triage instead of written, reusing the same diagnostics as the written-pin warnings. */
+function overrideTriageReason(opts: {
+  pkg: string;
+  forcedVersion: string;
+  scopes: OverrideScope[];
+  dependers: Depender[] | undefined;
+  installedVersions: string[];
+  breaking: boolean;
+  affected: number;
+  threshold: number;
+}): string {
+  const tail =
+    "This needs a human decision: accept the risk, wait for upstream, or write the override manually.";
+  if (!opts.breaking) {
+    return `${opts.affected} override(s) would be needed, more than the threshold of ${opts.threshold}. ${tail}`;
+  }
+  const isGlobal = opts.scopes.some((s) => s.type === "global");
+  if (!isGlobal) {
+    const rejection = rangeRejectionNote({
+      pkg: opts.pkg,
+      version: opts.forcedVersion,
+      dependers: opts.dependers,
+      strategy: "override",
+    });
+    if (rejection) return `${rejection} ${tail}`;
+  }
+  const pinNote = breakingPinNote(opts.pkg, opts.installedVersions, opts.forcedVersion);
+  return `${pinNote ?? `Pinning ${opts.pkg}@${opts.forcedVersion} would cross a major version boundary.`} ${tail}`;
 }
 
 export function formatUpgradeTarget(t: {
@@ -299,7 +383,7 @@ export async function resolveUpgradeDecision(
       scopes: decision.scopes,
     };
   }
-  if (decision.strategy === "wait") return decision;
+  if (decision.strategy === "triage") return decision;
   if (decision.strategy !== "upgrade" || !decision.upgradeTargets?.length) return decision;
   if (!hasLookup(lookup)) return decision;
 
@@ -337,20 +421,53 @@ export async function resolveUpgradeDecision(
     const installed = targets.map((t) => `${t.name}@${t.from ?? "?"}`).join(", ");
     const kind = proof?.dependencyKind;
     const severity = proof ? maxAdvisorySeverity(proof.advisories) : undefined;
-    if (shouldWait(kind, severity, proof?.pinDevelopment !== false)) {
+    if (shouldTriageDevelopment(kind, severity, proof?.pinDevelopment !== false)) {
       return {
-        strategy: "wait",
+        strategy: "triage",
         reason: `${installed} has no published version that closes ${proof?.vulnPackage ?? "the advisory"}. ${kind ?? "non-production"} dependency, not critical — no pin.`,
         forcedVersion: decision.forcedVersion,
         scope: decision.scope,
         scopes: decision.scopes,
       };
     }
-    const pin = pinLabel(
-      proof?.vulnPackage ?? "it",
-      decision.forcedVersion,
-      decision.scopes ?? [decision.scope],
-    );
+    const scopes = decision.scopes ?? [decision.scope];
+    const installedVersions = [
+      ...new Set(
+        (proof?.chains ?? [])
+          .filter((chain) => chain.package === proof?.vulnPackage)
+          .map((chain) => chain.version),
+      ),
+    ];
+    const gate = overrideGate({
+      scopes,
+      installedVersions,
+      forcedVersion: decision.forcedVersion,
+      pkg: proof?.vulnPackage ?? "it",
+      threshold: proof?.threshold ?? Infinity,
+    });
+    if (gate.blocked) {
+      const base = hadCandidate
+        ? `${installed} has no published version that closes ${proof?.vulnPackage ?? "the advisory"}.`
+        : `${installed} is already the latest published version, so a root upgrade cannot go higher.`;
+      const reason = `${base} ${overrideTriageReason({
+        pkg: proof?.vulnPackage ?? "it",
+        forcedVersion: decision.forcedVersion,
+        scopes,
+        dependers: proof?.dependers,
+        installedVersions,
+        breaking: gate.breaking,
+        affected: gate.affected,
+        threshold: proof?.threshold ?? Infinity,
+      })}`;
+      return {
+        strategy: "triage",
+        reason,
+        forcedVersion: decision.forcedVersion,
+        scope: decision.scope,
+        scopes: decision.scopes,
+      };
+    }
+    const pin = pinLabel(proof?.vulnPackage ?? "it", decision.forcedVersion, scopes);
     const reason = hadCandidate
       ? `${installed} has no published version that closes ${proof?.vulnPackage ?? "the advisory"}. ${pin}`
       : `${installed} is already the latest published version, so a root upgrade cannot go higher. ${pin}`;

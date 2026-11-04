@@ -135,6 +135,7 @@ export async function runVerify(opts: {
           dependencyKind: graph.dependencyKind,
           directs: graph.directs,
           pinDevelopment: config.pinDevelopment,
+          threshold: config.upgradeRootThreshold,
         },
       );
       const pm = resolvePackageManager(cwd);
@@ -155,7 +156,7 @@ export async function runVerify(opts: {
         installed: graph.versions,
         roots: graph.roots.map((r) => `${r.name}@${r.version}`),
         chains: graph.chains.map((c) => c.path.join(" → ")),
-        action: decision.strategy === "wait" ? "override" : decision.strategy,
+        action: decision.strategy,
         forcedVersion: pin.version,
         upgradeTargets: decision.upgradeTargets,
         summary: `Keep the override — ${why}.${bump ? ` ${bump}.` : ""}`,

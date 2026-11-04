@@ -105,8 +105,8 @@
   <script>
     const report = JSON.parse(document.getElementById("supplywarden-data").textContent || "{}");
     const entries = report.entries || [];
-    const order = { refresh: 0, upgrade: 1, override: 2, wait: 3, drop: 4, keep: 5 };
-    const todoActions = new Set(["refresh", "upgrade", "override", "wait"]);
+    const order = { refresh: 0, upgrade: 1, override: 2, triage: 3, drop: 4, keep: 5 };
+    const todoActions = new Set(["refresh", "upgrade", "override", "triage"]);
 
     const parts = String(report.cwd || "").split(/[/\\]/).filter(Boolean);
     const where = parts[parts.length - 1] || "";

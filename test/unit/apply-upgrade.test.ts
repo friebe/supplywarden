@@ -437,10 +437,10 @@ describe("applyFix root upgrade", () => {
     ]);
   });
 
-  it("prints wait and does not write an override or a metadata file", async () => {
+  it("prints triage and does not write an override or a metadata file", async () => {
     const cwd = await nxProject();
-    const waitDecision = {
-      strategy: "wait" as const,
+    const triageDecision = {
+      strategy: "triage" as const,
       reason: "development tree",
       forcedVersion: "1.4.2",
       scope: { type: "global" as const },
@@ -450,11 +450,11 @@ describe("applyFix root upgrade", () => {
       config: DEFAULT_CONFIG,
       group,
       graph,
-      decision: waitDecision,
+      decision: triageDecision,
       apply: true,
     });
     expect(applied.exitCode).toBe(0);
-    expect(applied.messages.join("\n")).toMatch(/WAIT/);
+    expect(applied.messages.join("\n")).toMatch(/TRIAGE/);
     expect(applied.writtenFiles).toBeUndefined();
     const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
       overrides?: unknown;

@@ -74,7 +74,11 @@ export async function runCheck(opts: {
   }
 
   const actionable = findings.filter(
-    (f) => f.action === "refresh" || f.action === "upgrade" || f.action === "override",
+    (f) =>
+      f.action === "refresh" ||
+      f.action === "upgrade" ||
+      f.action === "override" ||
+      f.action === "triage",
   );
   const messages = findings.flatMap((f) => findingLines(f));
   if (!findings.length) {
@@ -97,7 +101,7 @@ export async function runCheck(opts: {
         override: findings.filter((f) => f.action === "override").length,
         keep: findings.filter((f) => f.action === "keep").length,
         drop: findings.filter((f) => f.action === "drop").length,
-        wait: findings.filter((f) => f.action === "wait").length,
+        triage: findings.filter((f) => f.action === "triage").length,
       },
       entries: findings,
       groups: groups.groups,
@@ -120,9 +124,11 @@ async function findingFromAudit(
       vulnPackage: group.package,
       advisories: group.advisories,
       chains: graph.chains,
+      dependers: graph.dependers,
       dependencyKind: graph.dependencyKind,
       directs: graph.directs,
       pinDevelopment: config.pinDevelopment,
+      threshold: config.upgradeRootThreshold,
     },
   );
   return toFinding(cwd, group, graph, decision);
@@ -226,7 +232,7 @@ function toFinding(
     };
   }
 
-  if (decision.strategy === "wait") {
+  if (decision.strategy === "triage") {
     return {
       ...base,
       summary: decision.reason,
