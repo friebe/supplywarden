@@ -1,4 +1,9 @@
-import { execFile, execFileSync, spawn, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
+import {
+  execFile,
+  execFileSync,
+  spawn,
+  type ExecFileSyncOptionsWithStringEncoding,
+} from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -78,7 +83,11 @@ export async function execPm(
     await execPmInherit(bin, args, opts);
     return { stdout: "", stderr: "" };
   }
-  const run = execFileAsync(bin.file, [...bin.argsPrefix, ...args], execOptions(bin, opts)) as Promise<{
+  const run = execFileAsync(
+    bin.file,
+    [...bin.argsPrefix, ...args],
+    execOptions(bin, opts),
+  ) as Promise<{
     stdout: string | Buffer;
     stderr: string | Buffer;
   }>;
@@ -94,11 +103,7 @@ export async function execPm(
   }
 }
 
-function execPmInherit(
-  bin: ResolvedPm,
-  args: string[],
-  opts: ExecOpts,
-): Promise<void> {
+function execPmInherit(bin: ResolvedPm, args: string[], opts: ExecOpts): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin.file, [...bin.argsPrefix, ...args], {
       cwd: opts.cwd,

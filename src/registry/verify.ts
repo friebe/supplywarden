@@ -10,6 +10,7 @@ export type NpmPackumentVersion = {
   deprecated?: string;
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
 };
 
 export type NpmPackument = {
@@ -20,6 +21,14 @@ export type NpmPackument = {
 
 /** pkg → version → dep → range */
 export type OfflineDepTree = Record<string, Record<string, Record<string, string>>>;
+
+export type OverlayVersion = {
+  dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+};
+
+/** Flat dependency maps stay valid. A version may also name dependencies and peerDependencies. */
+export type OverlayTree = Record<string, Record<string, Record<string, string> | OverlayVersion>>;
 
 export async function fetchPackument(pkg: string): Promise<NpmPackument | null> {
   const url = `https://registry.npmjs.org/${encodeURIComponent(pkg)}`;
@@ -49,7 +58,10 @@ export function matchingFromPackument(packument: NpmPackument, range: string): s
   return maxSatisfying(publishedVersions(packument), range) ?? undefined;
 }
 
-export function minMatchingFromPackument(packument: NpmPackument, range: string): string | undefined {
+export function minMatchingFromPackument(
+  packument: NpmPackument,
+  range: string,
+): string | undefined {
   return minSatisfying(publishedVersions(packument), range) ?? undefined;
 }
 
@@ -71,20 +83,51 @@ export function dependencyRangeFromPackument(
   return meta.dependencies?.[dep] ?? meta.optionalDependencies?.[dep];
 }
 
-export function loadRegistryOverlay(cwd: string): OfflineDepTree {
+export function peerDependenciesFromPackument(
+  packument: NpmPackument,
+  version: string,
+): Record<string, string> | undefined {
+  const meta = packument.versions?.[version];
+  if (!meta) return undefined;
+  return meta.peerDependencies ?? {};
+}
+
+export function loadRegistryOverlay(cwd: string): OverlayTree {
   const path = join(cwd, REGISTRY_OVERLAY_FILENAME);
   if (!existsSync(path)) return {};
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    return raw as OfflineDepTree;
+    return raw as OverlayTree;
   } catch {
     return {};
   }
 }
 
-function overlayVersions(deps: Record<string, Record<string, string>> | undefined): string[] {
+function overlayVersions(
+  deps: Record<string, Record<string, string> | OverlayVersion> | undefined,
+): string[] {
   return Object.keys(deps ?? {}).filter((version) => Boolean(valid(version)));
+}
+
+function isOverlayVersion(entry: Record<string, string> | OverlayVersion): entry is OverlayVersion {
+  const record = entry as OverlayVersion;
+  return typeof record.dependencies === "object" || typeof record.peerDependencies === "object";
+}
+
+function overlayDependencies(
+  entry: Record<string, string> | OverlayVersion | undefined,
+): Record<string, string> {
+  if (!entry) return {};
+  if (isOverlayVersion(entry)) return entry.dependencies ?? {};
+  return entry;
+}
+
+function overlayPeers(
+  entry: Record<string, string> | OverlayVersion | undefined,
+): Record<string, string> {
+  if (!entry || !isOverlayVersion(entry)) return {};
+  return entry.peerDependencies ?? {};
 }
 
 export function createLiveRegistry(cwd?: string) {
@@ -138,7 +181,7 @@ export function createLiveRegistry(cwd?: string) {
     },
     async dependencyRange(pkg: string, version: string, dep: string) {
       const stub = overlay[pkg];
-      if (stub) return stub[version]?.[dep];
+      if (stub) return overlayDependencies(stub[version])[dep];
       const packument = await packumentOf(pkg);
       if (!packument) return undefined;
       return dependencyRangeFromPackument(packument, version, dep);
@@ -150,12 +193,20 @@ export function createLiveRegistry(cwd?: string) {
       if (!packument) return undefined;
       return minMatchingFromPackument(packument, range);
     },
+    async peerDependencies(pkg: string, version: string) {
+      const stub = overlay[pkg];
+      if (stub) return version in stub ? overlayPeers(stub[version]) : undefined;
+      const packument = await packumentOf(pkg);
+      if (!packument) return undefined;
+      return peerDependenciesFromPackument(packument, version);
+    },
   };
 }
 
 export function createOfflineRegistry(
   known: Record<string, string[]> = {},
   deps: OfflineDepTree = {},
+  peers: OfflineDepTree = {},
 ) {
   return {
     async verifyPackageVersion(pkg: string, version: string) {
@@ -179,7 +230,10 @@ export function createOfflineRegistry(
       if (!valid(from)) return [];
       const allowPrerelease = from.includes("-");
       return versions
-        .filter((version) => valid(version) && gt(version, from) && (allowPrerelease || !version.includes("-")))
+        .filter(
+          (version) =>
+            valid(version) && gt(version, from) && (allowPrerelease || !version.includes("-")),
+        )
         .sort(compare);
     },
     async dependencyRange(pkg: string, version: string, dep: string) {
@@ -189,6 +243,13 @@ export function createOfflineRegistry(
       const versions = known[pkg];
       if (!versions) return undefined;
       return minSatisfying(versions, range) ?? undefined;
+    },
+    async peerDependencies(pkg: string, version: string) {
+      const listed = peers[pkg];
+      if (listed) return version in listed ? (listed[version] ?? {}) : undefined;
+      const versions = known[pkg];
+      if (versions) return versions.includes(version) ? {} : undefined;
+      return {};
     },
   };
 }
@@ -207,21 +268,4 @@ export function pnpmVersion(): string | null {
   } catch {
     return null;
   }
-}
-
-export function parseNpmMajor(version: string): number {
-  const major = Number(version.split(".")[0]);
-  return Number.isFinite(major) ? major : 0;
-}
-
-export type MaintenanceScore = "well-maintained" | "stale" | "abandoned" | "unknown";
-
-export function scoreMaintenance(packument: NpmPackument | null): MaintenanceScore {
-  if (!packument?.time) return "unknown";
-  const modified = packument.time.modified ?? packument.time.created;
-  if (!modified) return "unknown";
-  const ageDays = (Date.now() - new Date(modified).getTime()) / 86_400_000;
-  if (ageDays < 180) return "well-maintained";
-  if (ageDays < 730) return "stale";
-  return "abandoned";
 }

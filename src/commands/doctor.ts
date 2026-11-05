@@ -1,6 +1,6 @@
-import { loadConfig, resolveConfigFile } from "../config.js";
+import { loadConfig } from "../config.js";
 import { detectPackageManager, hasLockfile } from "../graph/npm.js";
-import { readMetadata, validateMetadataShape } from "../metadata/store.js";
+import { resolveProjectDir } from "../graph/workspace.js";
 import { npmVersion, pnpmVersion } from "../registry/verify.js";
 import { nowIso } from "../util/time.js";
 import type { CommandResult } from "../types.js";
@@ -14,7 +14,7 @@ function npmSupportsOverrides(version: string): boolean {
 export function runDoctor(opts: { cwd: string }): CommandResult {
   const messages: string[] = [];
   const issues: string[] = [];
-  const cwd = opts.cwd;
+  const cwd = resolveProjectDir(opts.cwd);
   const config = loadConfig(cwd);
 
   const pnpm = pnpmVersion();
@@ -51,26 +51,6 @@ export function runDoctor(opts: { cwd: string }): CommandResult {
   }
 
   messages.push(`audit minSeverity: ${config.audit.minSeverity}`);
-
-  const configFile = resolveConfigFile(cwd);
-  if (configFile.legacy) {
-    messages.push(
-      `${configFile.path}: legacy config — rename to .supplywardenrc.json`,
-    );
-  }
-
-  try {
-    const metadata = readMetadata(cwd, config);
-    if (metadata.entries.length) {
-      const schemaErrors = validateMetadataShape(metadata);
-      if (schemaErrors.length) issues.push(...schemaErrors);
-      else messages.push(`security-metadata.json: ${metadata.entries.length} entries`);
-    } else {
-      messages.push("security-metadata.json: none (run supplywarden init)");
-    }
-  } catch (err) {
-    issues.push(`metadata invalid: ${(err as Error).message}`);
-  }
 
   const ok = issues.length === 0;
   return {

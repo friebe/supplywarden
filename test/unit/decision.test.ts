@@ -1,9 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { highestPatchedVersion, groupAlerts } from "../../src/alerts/dependabot.js";
-import { recommend, stillVulnerable, upgradeTargetTo, formatUpgradeTarget, formatUpgradeTargets, resolveUpgradeDecision, lookupFromRegistry, decide } from "../../src/decision/engine.js";
-import { loadAlertFile } from "../../src/alerts/dependabot.js";
-import { join } from "node:path";
-import { FIXTURES_ROOT } from "../helpers/fixture-project.js";
+import {
+  recommend,
+  stillVulnerable,
+  formatUpgradeTarget,
+  formatUpgradeTargets,
+  resolveUpgradeDecision,
+  lookupFromRegistry,
+  decide,
+  overrideScopes,
+  rangeRejectionNote,
+  vulnerableReach,
+  safeDirectCopyNote,
+  breakingPinNote,
+  majorJumpSelectorRange,
+  proposeTriageOverride,
+} from "../../src/decision/engine.js";
 import { DEFAULT_CONFIG } from "../../src/config.js";
 import { createOfflineRegistry } from "../../src/registry/verify.js";
 import type { Advisory, Decision, DependencyChain } from "../../src/types.js";
@@ -13,7 +25,7 @@ describe("decision engine", () => {
     expect(recommend({ rootCount: 2, threshold: 3, canUpgradeRoots: true })).toBe("upgrade");
   });
 
-  it("recommends wait for a non-critical development tree over the threshold", () => {
+  it("pins a non-critical development tree over the threshold by default", () => {
     expect(
       recommend({
         rootCount: 5,
@@ -22,10 +34,23 @@ describe("decision engine", () => {
         kind: "development",
         severity: "high",
       }),
-    ).toBe("wait");
+    ).toBe("override");
   });
 
-  it("does not wait for critical, even on a development tree", () => {
+  it("sends a non-critical development tree to triage when pinDevelopment is off", () => {
+    expect(
+      recommend({
+        rootCount: 5,
+        threshold: 3,
+        canUpgradeRoots: true,
+        kind: "development",
+        severity: "high",
+        pinDevelopment: false,
+      }),
+    ).toBe("triage");
+  });
+
+  it("does not send critical to triage, even on a development tree", () => {
     expect(
       recommend({
         rootCount: 5,
@@ -33,11 +58,12 @@ describe("decision engine", () => {
         canUpgradeRoots: true,
         kind: "development",
         severity: "critical",
+        pinDevelopment: false,
       }),
     ).toBe("override");
   });
 
-  it("decides wait on a high-severity development tree over the threshold", () => {
+  it("pins a high-severity development tree over the threshold by default", () => {
     const decision = decide({
       graph: {
         package: "picomatch",
@@ -56,79 +82,329 @@ describe("decision engine", () => {
       advisories: [{ severity: "high", vulnerableRange: "< 4.0.4", patchedVersion: "4.0.4" }],
       config: DEFAULT_CONFIG,
     });
-    expect(decision.strategy).toBe("wait");
+    expect(decision.strategy).toBe("override");
+    expect(decision.forcedVersion).toBe("4.0.4");
+  });
+
+  it("sends a high-severity development tree to triage when pinDevelopment is off", () => {
+    const decision = decide({
+      graph: {
+        package: "picomatch",
+        versions: ["4.0.2"],
+        inTree: true,
+        roots: [
+          { name: "eslint", version: "8.57.0" },
+          { name: "jest", version: "29.0.0" },
+          { name: "webpack", version: "5.0.0" },
+          { name: "ava", version: "5.0.0" },
+        ],
+        chains: [],
+        dependerRanges: [],
+        dependencyKind: "development",
+      },
+      advisories: [{ severity: "high", vulnerableRange: "< 4.0.4", patchedVersion: "4.0.4" }],
+      config: { ...DEFAULT_CONFIG, pinDevelopment: false },
+    });
+    expect(decision.strategy).toBe("triage");
+    expect(decision.reason).toMatch(/more than the threshold of 3/);
+    expect(decision.reason).toMatch(/development dependency/);
+    expect(decision.reason).toMatch(/No root upgrade and no pin/);
+  });
+
+  it("warns when a pin moves onto a newer major", () => {
+    expect(breakingPinNote("left-pad", ["1.3.0"], "2.0.0")).toBe(
+      "Breaking major pin: left-pad@1.3.0 → 2.0.0. Dependents still on the old major can break.",
+    );
+  });
+
+  it("warns when a pin forces an older major", () => {
+    expect(breakingPinNote("undici", ["8.21.0"], "7.30.1")).toBe(
+      "Breaking major pin: undici@8.21.0 → 7.30.1. Forcing an older major can break.",
+    );
+  });
+
+  it("stays quiet when the pin keeps the same major", () => {
+    expect(breakingPinNote("undici", ["7.28.0"], "7.30.1")).toBeUndefined();
+  });
+
+  it("refreshes the lockfile when every parent already accepts the patched version", () => {
+    const decision = decide({
+      graph: {
+        package: "zod",
+        versions: ["4.6.5"],
+        inTree: true,
+        roots: [{ name: "@angular/forms", version: "22.2.3" }],
+        chains: [
+          {
+            path: ["@angular/forms@22.2.3", "zod@4.6.5"],
+            package: "zod",
+            version: "4.6.5",
+          },
+        ],
+        dependerRanges: ["^4.0.10"],
+        dependers: [{ parent: "@angular/forms", range: "^4.0.10", version: "22.2.3" }],
+      },
+      advisories: [{ severity: "high", vulnerableRange: "<4.6.6", patchedVersion: "4.6.6" }],
+      config: DEFAULT_CONFIG,
+    });
+
+    expect(decision.strategy).toBe("refresh");
+    expect(decision.reason).toMatch(/Refresh the lockfile/);
+  });
+
+  it("proves a refresh from the published parent range when pnpm stores an exact resolution", async () => {
+    const decision: Decision = {
+      strategy: "override",
+      reason: "too many roots",
+      forcedVersion: "4.6.6",
+      scope: { type: "scoped", parent: "@angular/forms" },
+    };
+    const resolved = await resolveUpgradeDecision(
+      decision,
+      {
+        async dependencyRange(parent, version, dependency) {
+          expect([parent, version, dependency]).toEqual(["@angular/forms", "22.2.3", "zod"]);
+          return "^4.0.10";
+        },
+      },
+      {
+        vulnPackage: "zod",
+        advisories: [
+          { severity: "high", vulnerableRange: "<4.6.6", patchedVersion: "4.6.6" },
+        ],
+        chains: [
+          {
+            path: ["@angular/forms@22.2.3", "zod@4.6.5"],
+            package: "zod",
+            version: "4.6.5",
+          },
+        ],
+        dependers: [{ parent: "@angular/forms", range: "4.6.5", version: "22.2.3" }],
+      },
+    );
+
+    expect(resolved.strategy).toBe("refresh");
+  });
+
+  it("only upgrades roots that still pull a vulnerable copy, not roots with a safe one", () => {
+    const decision = decide({
+      graph: {
+        package: "undici",
+        versions: ["7.29.0", "7.30.1"],
+        inTree: true,
+        roots: [
+          { name: "nx", version: "23.2.1" },
+          { name: "jsdom", version: "27.4.0" },
+        ],
+        chains: [
+          { path: ["nx@23.2.1", "undici@7.30.1"], package: "undici", version: "7.30.1" },
+          { path: ["jsdom@27.4.0", "undici@7.29.0"], package: "undici", version: "7.29.0" },
+        ],
+        dependerRanges: ["7.30.1", "7.29.0"],
+        dependers: [
+          { parent: "nx", range: "7.30.1", version: "23.2.1" },
+          { parent: "jsdom", range: "7.29.0", version: "27.4.0" },
+        ],
+      },
+      advisories: [{ severity: "high", vulnerableRange: "<7.30.0", patchedVersion: "7.30.0" }],
+      config: DEFAULT_CONFIG,
+    });
+
+    expect(decision.strategy).toBe("upgrade");
+    expect(decision.upgradeTargets?.map((t) => t.name)).toEqual(["jsdom"]);
+    expect(decision.reason).toMatch(/^1 root\(s\)/);
+  });
+
+  it("ignores a safe copy whose parent rejects the patch when refreshing vulnerable copies", () => {
+    const decision = decide({
+      graph: {
+        package: "zod",
+        versions: ["4.6.7", "4.6.5"],
+        inTree: true,
+        roots: [
+          { name: "safe-parent", version: "1.0.0" },
+          { name: "@angular/forms", version: "22.2.3" },
+        ],
+        chains: [
+          {
+            path: ["safe-parent@1.0.0", "zod@4.6.7"],
+            package: "zod",
+            version: "4.6.7",
+          },
+          {
+            path: ["@angular/forms@22.2.3", "zod@4.6.5"],
+            package: "zod",
+            version: "4.6.5",
+          },
+        ],
+        dependerRanges: ["4.6.7", "^4.0.10"],
+        dependers: [
+          { parent: "safe-parent", range: "4.6.7", version: "1.0.0" },
+          { parent: "@angular/forms", range: "^4.0.10", version: "22.2.3" },
+        ],
+      },
+      advisories: [{ severity: "high", vulnerableRange: "<4.6.6", patchedVersion: "4.6.6" }],
+      config: DEFAULT_CONFIG,
+    });
+
+    expect(decision.strategy).toBe("refresh");
   });
 });
 
 describe("advisory grouping", () => {
   it("merges three hono alerts onto the highest patch", () => {
-    const alerts = loadAlertFile(join(FIXTURES_ROOT, "alerts/hono-triple.json"));
-    const groups = groupAlerts(Array.isArray(alerts) ? alerts : [alerts]);
+    const groups = groupAlerts([
+      {
+        dependency: { package: { name: "hono", ecosystem: "npm" }, manifest_path: "package.json" },
+        security_advisory: { ghsa_id: "GHSA-aaa", severity: "high" },
+        security_vulnerability: {
+          vulnerable_version_range: "< 4.6.5",
+          first_patched_version: { identifier: "4.6.5" },
+        },
+      },
+      {
+        dependency: { package: { name: "hono", ecosystem: "npm" }, manifest_path: "package.json" },
+        security_advisory: { ghsa_id: "GHSA-bbb", severity: "medium" },
+        security_vulnerability: {
+          vulnerable_version_range: "< 4.7.0",
+          first_patched_version: { identifier: "4.7.0" },
+        },
+      },
+      {
+        dependency: { package: { name: "hono", ecosystem: "npm" }, manifest_path: "package.json" },
+        security_advisory: { ghsa_id: "GHSA-ccc", severity: "high" },
+        security_vulnerability: {
+          vulnerable_version_range: "< 4.8.1",
+          first_patched_version: { identifier: "4.8.1" },
+        },
+      },
+    ]);
     expect(groups).toHaveLength(1);
     expect(groups[0]!.package).toBe("hono");
     expect(groups[0]!.advisories).toHaveLength(3);
     expect(groups[0]!.forcedVersion).toBe("4.8.1");
     expect(highestPatchedVersion(groups[0]!.advisories)).toBe("4.8.1");
   });
+});
 
-  it("labels a Dependabot development-scoped alert", () => {
-    const groups = groupAlerts([
-      {
-        dependency: {
-          package: { name: "picomatch", ecosystem: "npm" },
-          manifest_path: "package.json",
-          scope: "development",
-        },
-        security_advisory: { ghsa_id: "GHSA-dev", severity: "high" },
-        security_vulnerability: { vulnerable_version_range: "< 4.0.1", first_patched_version: { identifier: "4.0.1" } },
-      },
+describe("override scope", () => {
+  it("pins each immediate parent instead of one global override", () => {
+    expect(
+      overrideScopes({
+        package: "qs",
+        versions: ["6.5.0"],
+        inTree: true,
+        roots: [{ name: "express", version: "4.18.2" }],
+        chains: [
+          { path: ["express@4.18.2", "qs@6.5.0"], package: "qs", version: "6.5.0" },
+          {
+            path: ["express@4.18.2", "body-parser@1.20.1", "qs@6.5.0"],
+            package: "qs",
+            version: "6.5.0",
+          },
+        ],
+        dependerRanges: [],
+      }),
+    ).toEqual([
+      { type: "scoped", parent: "body-parser" },
+      { type: "scoped", parent: "express" },
     ]);
-    expect(groups[0]!.dependencyKind).toBe("development");
   });
 
-  it("reads Dependabot scopes from alerts/mixed.json", () => {
-    const alerts = loadAlertFile(join(FIXTURES_ROOT, "alerts/mixed.json"));
-    const groups = groupAlerts(Array.isArray(alerts) ? alerts : [alerts]);
-    const byPkg = Object.fromEntries(groups.map((g) => [g.package, g]));
-    expect(byPkg.picomatch?.dependencyKind).toBe("development");
-    expect(byPkg.qs?.dependencyKind).toBe("production");
-    expect(byPkg.qs?.advisories).toHaveLength(2);
-    expect(byPkg.ws?.dependencyKind).toBe("production");
+  it("keeps a global pin when the package is a direct dependency", () => {
+    expect(
+      overrideScopes({
+        package: "qs",
+        versions: ["6.5.0"],
+        inTree: true,
+        roots: [{ name: "qs", version: "6.5.0" }],
+        chains: [{ path: ["qs@6.5.0"], package: "qs", version: "6.5.0" }],
+        dependerRanges: [],
+      }),
+    ).toEqual([{ type: "global" }]);
   });
 
-  it("treats mixed runtime+development as production", () => {
-    const groups = groupAlerts([
-      {
-        dependency: {
-          package: { name: "qs", ecosystem: "npm" },
-          manifest_path: "package.json",
-          scope: "development",
-        },
-        security_advisory: { severity: "high" },
-        security_vulnerability: { vulnerable_version_range: "< 6.11.0" },
-      },
-      {
-        dependency: {
-          package: { name: "qs", ecosystem: "npm" },
-          manifest_path: "package.json",
-          scope: "runtime",
-        },
-        security_advisory: { severity: "high" },
-        security_vulnerability: { vulnerable_version_range: "< 6.11.0" },
-      },
+  it("scopes the pin when the direct copy is already outside the advisory", () => {
+    const advisories = [
+      { severity: "high" as const, vulnerableRange: "< 8.3.3", patchedVersion: "8.3.3" },
+    ];
+    const graph = {
+      package: "vite",
+      versions: ["8.3.5", "8.3.0", "6.3.5"],
+      inTree: true,
+      roots: [
+        { name: "vite", version: "8.3.5" },
+        { name: "@angular/build", version: "21.0.0" },
+        { name: "vitest", version: "3.2.0" },
+      ],
+      chains: [
+        { path: ["vite@8.3.5"], package: "vite", version: "8.3.5" },
+        { path: ["@angular/build@21.0.0", "vite@8.3.0"], package: "vite", version: "8.3.0" },
+        { path: ["vitest@3.2.0", "vite@6.3.5"], package: "vite", version: "6.3.5" },
+      ],
+      dependerRanges: [],
+    };
+    const scopes = overrideScopes(graph, advisories);
+    expect(scopes).toEqual([
+      { type: "scoped", parent: "@angular/build" },
+      { type: "scoped", parent: "vitest" },
     ]);
-    expect(groups).toHaveLength(1);
-    expect(groups[0]!.dependencyKind).toBe("production");
+    expect(safeDirectCopyNote(graph, advisories, scopes)).toBe(
+      "vite@8.3.5 is already outside the advisory.",
+    );
+  });
+
+  it("keeps a global pin when the direct copy is still vulnerable", () => {
+    expect(
+      overrideScopes(
+        {
+          package: "vite",
+          versions: ["8.3.2", "8.3.0"],
+          inTree: true,
+          roots: [
+            { name: "vite", version: "8.3.2" },
+            { name: "vitest", version: "3.2.0" },
+          ],
+          chains: [
+            { path: ["vite@8.3.2"], package: "vite", version: "8.3.2" },
+            { path: ["vitest@3.2.0", "vite@8.3.0"], package: "vite", version: "8.3.0" },
+          ],
+          dependerRanges: [],
+        },
+        [{ severity: "high", vulnerableRange: "< 8.3.3", patchedVersion: "8.3.3" }],
+      ),
+    ).toEqual([{ type: "global" }]);
+  });
+
+  it("leaves a root out of via when its installed copy is already safe", () => {
+    const reach = vulnerableReach(
+      {
+        package: "vite",
+        versions: ["8.3.5", "5.4.0"],
+        inTree: true,
+        roots: [
+          { name: "vite", version: "8.3.5" },
+          { name: "@angular/build", version: "21.0.0" },
+          { name: "vitest", version: "3.2.0" },
+        ],
+        chains: [
+          { path: ["vite@8.3.5"], package: "vite", version: "8.3.5" },
+          { path: ["vitest@3.2.0", "vite@8.3.5"], package: "vite", version: "8.3.5" },
+          { path: ["@angular/build@21.0.0", "vite@5.4.0"], package: "vite", version: "5.4.0" },
+        ],
+        dependerRanges: ["^5.0.0"],
+        dependers: [{ parent: "@angular/build", range: "^5.0.0", version: "21.0.0" }],
+      },
+      [{ severity: "high", vulnerableRange: "< 8.3.3", patchedVersion: "8.3.3" }],
+    );
+    expect(reach.roots.map((root) => root.name)).toEqual(["@angular/build"]);
+    expect(reach.chains.map((chain) => chain.path.join(" → "))).toEqual([
+      "@angular/build@21.0.0 → vite@5.4.0",
+    ]);
   });
 });
 
 describe("upgrade targets", () => {
-  it("does not suggest the version already installed", () => {
-    expect(upgradeTargetTo("23.3.0", "23.3.0", "23.3.0")).toBeUndefined();
-    expect(upgradeTargetTo("23.3.0", "23.4.1", "23.4.1")).toBe("23.4.1");
-    expect(upgradeTargetTo("23.3.0", undefined, "24.0.0")).toBe("24.0.0");
-  });
-
   it("formats installed vs destination", () => {
     expect(formatUpgradeTarget({ name: "nx", from: "23.3.0", to: "23.4.1" })).toBe(
       "nx@23.3.0 → 23.4.1",
@@ -168,7 +444,7 @@ describe("upgrade targets", () => {
       },
     );
     expect(next.strategy).toBe("override");
-    expect(next.reason).toMatch(/already at latest/);
+    expect(next.reason).toMatch(/already the latest published version/);
   });
 
   it("fills to when a newer release is proven to close the advisory", async () => {
@@ -185,7 +461,7 @@ describe("upgrade targets", () => {
         getLatestMatching: async () => "23.4.1",
         dependencyRange: async (pkg, version, dep) => {
           if (pkg === "nx" && dep === "smol-toml" && version === "23.4.1") return "^1.4.2";
-          return "^1.3.0";
+          return "~1.3.0";
         },
       },
       smolTomlProof("23.3.0"),
@@ -236,10 +512,32 @@ describe("upgrade targets", () => {
     );
     expect(next.strategy).toBe("override");
     expect(next.forcedVersion).toBe("1.4.2");
-    expect(next.reason).toMatch(/no proven version that closes smol-toml/);
+    expect(next.reason).toMatch(/no published version that closes smol-toml/);
   });
 
-  it("waits instead of overriding when a development-tree upgrade cannot be proven", async () => {
+  it("sends a development-tree upgrade to triage instead of overriding when it cannot be proven", async () => {
+    const registry = createOfflineRegistry(
+      {
+        nx: ["23.2.0", "23.2.1"],
+        "smol-toml": ["1.3.1", "1.4.2"],
+      },
+      {
+        nx: {
+          "23.2.1": { "smol-toml": "^1.3.1" },
+        },
+      },
+    );
+    const next = await resolveUpgradeDecision(nxUpgrade("23.2.0"), lookupFromRegistry(registry), {
+      ...smolTomlProof("23.2.0"),
+      dependencyKind: "development",
+      pinDevelopment: false,
+    });
+    expect(next.strategy).toBe("triage");
+    expect(next.reason).toMatch(/no published version that closes smol-toml/);
+    expect(next.reason).toMatch(/development dependency, not critical/);
+  });
+
+  it("pins a development tree when no published root closes the advisory", async () => {
     const registry = createOfflineRegistry(
       {
         nx: ["23.2.0", "23.2.1"],
@@ -255,8 +553,8 @@ describe("upgrade targets", () => {
       ...smolTomlProof("23.2.0"),
       dependencyKind: "development",
     });
-    expect(next.strategy).toBe("wait");
-    expect(next.reason).toMatch(/wait/);
+    expect(next.strategy).toBe("override");
+    expect(next.reason).toMatch(/Pin smol-toml@1\.4\.2/);
   });
 
   it("walks an intermediate hop before judging the vuln package", async () => {
@@ -277,21 +575,17 @@ describe("upgrade targets", () => {
         },
       },
     );
-    const next = await resolveUpgradeDecision(
-      nxUpgrade("23.2.0"),
-      lookupFromRegistry(registry),
-      {
-        vulnPackage: "smol-toml",
-        advisories: smolTomlAdvisories,
-        chains: [
-          {
-            path: ["nx@23.2.0", "@nx/js@23.2.0", "smol-toml@1.0.1"],
-            package: "smol-toml",
-            version: "1.0.1",
-          },
-        ],
-      },
-    );
+    const next = await resolveUpgradeDecision(nxUpgrade("23.2.0"), lookupFromRegistry(registry), {
+      vulnPackage: "smol-toml",
+      advisories: smolTomlAdvisories,
+      chains: [
+        {
+          path: ["nx@23.2.0", "@nx/js@23.2.0", "smol-toml@1.0.1"],
+          package: "smol-toml",
+          version: "1.0.1",
+        },
+      ],
+    });
     expect(next.strategy).toBe("upgrade");
     expect(next.upgradeTargets?.[0]?.to).toBe("23.3.0");
   });
@@ -316,6 +610,47 @@ describe("upgrade targets", () => {
     );
     expect(next.strategy).toBe("upgrade");
     expect(next.upgradeTargets?.[0]).toMatchObject({ name: "qs", from: "6.5.0", to: "6.11.2" });
+  });
+
+  it("installs direct dependencies whose peer range rejects the new root", async () => {
+    const next = await resolveUpgradeDecision(
+      {
+        strategy: "upgrade",
+        reason: "few roots",
+        forcedVersion: "19.2.14",
+        scope: { type: "global" },
+        upgradeTargets: [{ name: "@angular/core", from: "19.2.0" }],
+      },
+      {
+        versionsNewerThan: async () => ["19.2.14"],
+        peerDependencies: async (pkg, version): Promise<Record<string, string> | undefined> => {
+          if (pkg === "@angular/core") return {};
+          if (pkg === "@angular/common" && version === "19.2.0") {
+            return { "@angular/core": "19.2.0" };
+          }
+          if (pkg === "@angular/common" && version === "19.2.14") {
+            return { "@angular/core": "19.2.14" };
+          }
+          if (pkg === "@angular/forms") return { "@angular/core": "^19.0.0" };
+          return undefined;
+        },
+      },
+      {
+        vulnPackage: "@angular/core",
+        advisories: [{ severity: "high", vulnerableRange: "< 19.2.14", patchedVersion: "19.2.14" }],
+        chains: [{ path: ["@angular/core@19.2.0"], package: "@angular/core", version: "19.2.0" }],
+        directs: [
+          { name: "@angular/core", version: "19.2.0" },
+          { name: "@angular/common", version: "19.2.0" },
+          { name: "@angular/forms", version: "19.2.0" },
+        ],
+      },
+    );
+    expect(next.upgradeTargets?.map((target) => target.name)).toEqual([
+      "@angular/core",
+      "@angular/common",
+    ]);
+    expect(next.upgradeTargets?.[1]).toMatchObject({ from: "19.2.0", to: "19.2.14" });
   });
 });
 
@@ -351,17 +686,103 @@ function nxUpgrade(from: string): Decision {
   };
 }
 
+describe("rangeRejectionNote", () => {
+  const dependers = [
+    { parent: "body-parser", range: "6.5.0", version: "1.20.1" },
+    { parent: "express", range: "6.5.0", version: "4.18.2" },
+  ];
+
+  it("names the parents a safe version falls outside of and points at the root", () => {
+    expect(
+      rangeRejectionNote({
+        pkg: "qs",
+        version: "6.11.2",
+        dependers,
+        strategy: "upgrade",
+        upgradeTargets: [{ name: "express", from: "4.18.2", to: "4.18.3" }],
+      }),
+    ).toBe(
+      "body-parser@1.20.1 and express@4.18.2 ask for qs@6.5.0. That does not include 6.11.2. Upgrade the root first. express@4.18.2 → 4.18.3 moves that range.",
+    );
+  });
+
+  it("says nothing when every parent range accepts the version", () => {
+    expect(
+      rangeRejectionNote({
+        pkg: "qs",
+        version: "6.5.0",
+        dependers,
+        strategy: "upgrade",
+        upgradeTargets: [{ name: "express", from: "4.18.2", to: "4.18.3" }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("warns that a pin can break the parent that still asks for the old range", () => {
+    expect(
+      rangeRejectionNote({
+        pkg: "qs",
+        version: "6.11.2",
+        dependers: [{ parent: "body-parser", range: "~6.5.0", version: "1.20.1" }],
+        strategy: "override",
+      }),
+    ).toBe(
+      "body-parser@1.20.1 asks for qs@~6.5.0. That does not include 6.11.2. The pin forces qs@6.11.2. That parent can fail to build.",
+    );
+  });
+});
+
+describe("triage override proposal", () => {
+  it("builds a version selector that leaves older majors untouched", () => {
+    const advisories = [
+      { severity: "high" as const, vulnerableRange: "< 11.0.1", patchedVersion: "11.0.1" },
+    ];
+    expect(majorJumpSelectorRange(["3.1.2", "7.4.6"], advisories, "11.0.1")).toBe(">=3 <11.0.1");
+    // Only the vulnerable 7.x line is installed → start at 7, leave nothing below remapped.
+    expect(majorJumpSelectorRange(["7.4.6"], advisories, "11.0.1")).toBe(">=7 <11.0.1");
+    const proposal = proposeTriageOverride({
+      pkg: "minimatch",
+      version: "11.0.1",
+      scopes: [{ type: "global" }],
+      installedVersions: ["7.4.6"],
+      advisories,
+    });
+    expect(proposal.entries).toEqual(['"minimatch@>=7 <11.0.1": "11.0.1"']);
+    expect(proposal.forceCommand).toBe("supplywarden fix minimatch --apply --force");
+  });
+
+  it("falls back to a plain or scoped pin when there is no major jump", () => {
+    const proposal = proposeTriageOverride({
+      pkg: "qs",
+      version: "6.11.2",
+      scopes: [
+        { type: "scoped", parent: "express" },
+        { type: "scoped", parent: "body-parser" },
+      ],
+      installedVersions: ["6.5.0"],
+      advisories: [
+        { severity: "high", vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" },
+      ],
+    });
+    expect(proposal.entries).toEqual([
+      '"express": { "qs": "6.11.2" }',
+      '"body-parser": { "qs": "6.11.2" }',
+    ]);
+  });
+});
+
 describe("stillVulnerable", () => {
   it("flags uuid@10 against < 11.1.1", () => {
     expect(
-      stillVulnerable("10.0.0", [{ severity: "high", vulnerableRange: "< 11.1.1", patchedVersion: "11.1.1" }]),
+      stillVulnerable("10.0.0", [
+        { severity: "high", vulnerableRange: "< 11.1.1", patchedVersion: "11.1.1" },
+      ]),
     ).toBe(true);
   });
 
   it("accepts 11.1.1", () => {
-    expect(
-      stillVulnerable("11.1.1", [{ severity: "high", vulnerableRange: "< 11.1.1" }]),
-    ).toBe(false);
+    expect(stillVulnerable("11.1.1", [{ severity: "high", vulnerableRange: "< 11.1.1" }])).toBe(
+      false,
+    );
   });
 });
-

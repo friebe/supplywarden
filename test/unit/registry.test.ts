@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { join } from "node:path";
 import {
   createLiveRegistry,
@@ -44,5 +44,9 @@ describe("registry overlay", () => {
     expect(await registry.versionsNewerThan("nx", "23.2.0")).toEqual(["23.2.1", "23.2.5"]);
     expect(await registry.dependencyRange("nx", "23.2.1", "smol-toml")).toBe("^1.3.1");
     expect(await registry.dependencyRange("nx", "23.2.5", "smol-toml")).toBe("^1.4.2");
+    expect(await registry.peerDependencies("@demo/common", "1.0.0")).toEqual({
+      "@demo/core": "1.0.0",
+    });
+    expect(await registry.peerDependencies("nx", "23.2.5")).toEqual({});
   });
 });

@@ -38,7 +38,9 @@ export function createLiveInstall(): InstallClient {
           });
           return { ok: true };
         }
-        const pm = (file === "npm" || file === "pnpm" || file === "yarn" ? file : resolvePackageManager(cwd)) as PackageManager;
+        const pm = (
+          file === "npm" || file === "pnpm" || file === "yarn" ? file : resolvePackageManager(cwd)
+        ) as PackageManager;
         await execPm(pm, args, {
           cwd,
           timeout: 300_000,
