@@ -186,6 +186,35 @@ describe("decision engine", () => {
     expect(resolved.strategy).toBe("refresh");
   });
 
+  it("only upgrades roots that still pull a vulnerable copy, not roots with a safe one", () => {
+    const decision = decide({
+      graph: {
+        package: "undici",
+        versions: ["7.29.0", "7.30.1"],
+        inTree: true,
+        roots: [
+          { name: "nx", version: "23.2.1" },
+          { name: "jsdom", version: "27.4.0" },
+        ],
+        chains: [
+          { path: ["nx@23.2.1", "undici@7.30.1"], package: "undici", version: "7.30.1" },
+          { path: ["jsdom@27.4.0", "undici@7.29.0"], package: "undici", version: "7.29.0" },
+        ],
+        dependerRanges: ["7.30.1", "7.29.0"],
+        dependers: [
+          { parent: "nx", range: "7.30.1", version: "23.2.1" },
+          { parent: "jsdom", range: "7.29.0", version: "27.4.0" },
+        ],
+      },
+      advisories: [{ severity: "high", vulnerableRange: "<7.30.0", patchedVersion: "7.30.0" }],
+      config: DEFAULT_CONFIG,
+    });
+
+    expect(decision.strategy).toBe("upgrade");
+    expect(decision.upgradeTargets?.map((t) => t.name)).toEqual(["jsdom"]);
+    expect(decision.reason).toMatch(/^1 root\(s\)/);
+  });
+
   it("ignores a safe copy whose parent rejects the patch when refreshing vulnerable copies", () => {
     const decision = decide({
       graph: {

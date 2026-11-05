@@ -81,7 +81,8 @@ export function decide(opts: {
   const forcedVersion = firstSafeForcedVersion(opts.advisories);
   const refreshable =
     forcedVersion && canRefreshTransitive(opts.graph, opts.advisories, forcedVersion);
-  const rootCount = opts.graph.roots.length || 1;
+  const vulnerableRoots = vulnerableReach(opts.graph, opts.advisories).roots;
+  const rootCount = vulnerableRoots.length || 1;
   const kind = opts.graph.dependencyKind;
   const severity = maxAdvisorySeverity(opts.advisories);
   const threshold = opts.config.upgradeRootThreshold;
@@ -118,7 +119,7 @@ export function decide(opts: {
       forcedVersion,
       scope,
       scopes,
-      upgradeTargets: opts.graph.roots.map((r) => ({
+      upgradeTargets: vulnerableRoots.map((r) => ({
         name: r.name,
         from: r.version,
         ...(r.importer ? { filter: r.importer } : {}),

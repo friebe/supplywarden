@@ -262,8 +262,8 @@
           if (entry.dependencyKind && entry.dependencyKind !== "production") action.append(el("div", "sub", entry.dependencyKind));
           const from = viaCell(entry);
           const done = el("td", "do");
-          const command = (entry.commands || [])[0];
-          if (command) done.append(el("code", "", command));
+          const commands = entry.commands || [];
+          for (const command of commands) { const line = el("div", "cmd"); line.append(el("code", "", command)); done.append(line); }
           const note = advisoryNote(entry);
           if (note) done.append(note);
           const why = firstSentence(entry.summary);
@@ -279,8 +279,8 @@
         section.append(table(["Package", "Why", "Do"], groups.drop.map((entry) => {
           const tr = document.createElement("tr");
           const done = el("td", "do");
-          const command = (entry.commands || [])[0];
-          if (command) done.append(el("code", "", command));
+          const commands = entry.commands || [];
+          for (const command of commands) { const line = el("div", "cmd"); line.append(el("code", "", command)); done.append(line); }
           tr.append(nameCell(entry), el("td", "", firstSentence(entry.summary)), done);
           return tr;
         })));
