@@ -692,6 +692,84 @@ export function pinLabel(pkg: string, version: string, scopes: OverrideScope[]):
   return `Pin ${pkg}@${version} under ${parents.join(" and ")}.`;
 }
 
+/** A pin the human can consciously force-write from triage, including optional version selectors. */
+export type ProposedOverridePin = {
+  package: string;
+  version: string;
+  scope: OverrideScope;
+  /** npm/pnpm override key suffix after `pkg@`, e.g. `">=7 <11.0.1"`. */
+  selector?: string;
+};
+
+export type TriageOverrideProposal = {
+  /** Compact JSON snippets for the summary, e.g. `"uuid@>=9 <11.1.1": "11.1.1"`. */
+  entries: string[];
+  pins: ProposedOverridePin[];
+  forceCommand: string;
+};
+
+/**
+ * Range that remaps only the vulnerable majors jumping up to `forced`, leaving older
+ * lines outside the selector untouched — e.g. `">=7 <11.0.1"` for minimatch.
+ */
+export function majorJumpSelectorRange(
+  installedVersions: string[],
+  advisories: Advisory[],
+  forced: string,
+): string | undefined {
+  if (!valid(forced)) return undefined;
+  const toMajor = major(forced);
+  const fromMajors = installedVersions
+    .filter(
+      (version) =>
+        valid(version) && stillVulnerable(version, advisories) && major(version) < toMajor,
+    )
+    .map((version) => major(version));
+  if (!fromMajors.length) return undefined;
+  const minFrom = Math.min(...fromMajors);
+  if (minFrom >= toMajor) return undefined;
+  return `>=${minFrom} <${forced}`;
+}
+
+function formatProposedPin(pin: ProposedOverridePin): string {
+  const key = pin.selector ? `${pin.package}@${pin.selector}` : pin.package;
+  if (pin.scope.type === "scoped") {
+    return `"${pin.scope.parent}": { "${key}": "${pin.version}" }`;
+  }
+  return `"${key}": "${pin.version}"`;
+}
+
+/**
+ * Concrete override the human can force from triage. Major jumps prefer a version
+ * selector so older major lines stay untouched; otherwise the usual scoped/global pins.
+ */
+export function proposeTriageOverride(opts: {
+  pkg: string;
+  version: string;
+  scopes: OverrideScope[];
+  installedVersions: string[];
+  advisories: Advisory[];
+}): TriageOverrideProposal {
+  const selector = majorJumpSelectorRange(opts.installedVersions, opts.advisories, opts.version);
+  const pins: ProposedOverridePin[] = selector
+    ? [{ package: opts.pkg, version: opts.version, scope: { type: "global" }, selector }]
+    : (opts.scopes.length ? opts.scopes : [{ type: "global" as const }]).map((scope) => ({
+        package: opts.pkg,
+        version: opts.version,
+        scope,
+      }));
+  return {
+    entries: pins.map(formatProposedPin),
+    pins,
+    forceCommand: `supplywarden fix ${opts.pkg} --apply --force`,
+  };
+}
+
+export function formatTriageProposal(proposal: TriageOverrideProposal): string {
+  const shown = proposal.entries.join(", ");
+  return `Proposal: ${shown}. Pass --apply --force to write it anyway.`;
+}
+
 async function withPeerCompanions(
   decision: Decision,
   directs: Array<{ name: string; version: string }>,

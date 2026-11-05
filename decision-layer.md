@@ -41,7 +41,7 @@ flowchart TD
     F -- Ja --> T1["TRIAGE\nkein Pin gesetzt,\nMensch entscheidet"]
 
     F -- Nein --> G{"Override-Gate:\nMajor-Sprung? ODER\nbetroffene Parents > Threshold?"}
-    G -- "Ja (blockiert)" --> T2["TRIAGE\nMensch entscheidet:\nRisiko akzeptieren / auf Upstream warten / manuell pinnen"]
+    G -- "Ja (blockiert)" --> T2["TRIAGE + Proposal\nz.B. pkg@>=N <patched → patched\nMensch: Risiko akzeptieren / Upstream / fix --apply --force"]
     G -- Nein --> O["OVERRIDE\ngezielter Pin (global oder je Parent)\nwird automatisch geschrieben"]
 ```
 
@@ -78,6 +78,12 @@ flowchart TD
    geschrieben zu werden. Die Begründung wird dem Menschen mitgegeben
    (Major-Sprung-Hinweis bzw. Parent-Range-Konflikt, oder Anzahl der
    betroffenen Parents vs. Threshold).
+
+   Triage lässt dich nicht allein: neben der Begründung kommt ein **konkreter
+   Proposal** (z. B. `"uuid@>=9 <11.1.1": "11.1.1"` — ein Versionsselektor, der
+   ältere Major-Linien unangetastet lässt) und der Befehl
+   `supplywarden fix <pkg> --apply --force`. Ohne `--force` wird nichts
+   geschrieben; mit `--force` setzt du den Proposal bewusst trotz Gate.
 
 6. **Override** — alles, was durch das Gate kommt: ein Patch-/Minor-Bump
    innerhalb derselben Major-Version, begrenzt auf wenige Parents. Das ist der

@@ -7,7 +7,28 @@ export type OverridePin = {
   package: string;
   version: string;
   scope: OverrideScope;
+  /**
+   * When set, writes a version-selector key (`"pkg@${selector}": version`) so older
+   * major lines outside the selector stay untouched. Example: `">=7 <11.0.1"`.
+   */
+  selector?: string;
 };
+
+/** Split an override key into package name and optional version selector. */
+export function splitOverrideKey(key: string): { package: string; selector?: string } {
+  if (key.startsWith("@")) {
+    const secondAt = key.indexOf("@", 1);
+    if (secondAt === -1) return { package: key };
+    return { package: key.slice(0, secondAt), selector: key.slice(secondAt + 1) };
+  }
+  const at = key.indexOf("@");
+  if (at === -1) return { package: key };
+  return { package: key.slice(0, at), selector: key.slice(at + 1) };
+}
+
+export function overrideKey(pin: Pick<OverridePin, "package" | "selector">): string {
+  return pin.selector ? `${pin.package}@${pin.selector}` : pin.package;
+}
 
 type PackageJson = {
   overrides?: Record<string, unknown>;
@@ -36,13 +57,19 @@ export function writePackageJson(
 
 export function flattenOverrides(
   overrides: Record<string, unknown> | undefined,
-): Array<{ package: string; version: string; scope: OverrideScope }> {
+): OverridePin[] {
   if (!overrides) return [];
-  const out: Array<{ package: string; version: string; scope: OverrideScope }> = [];
+  const out: OverridePin[] = [];
 
   for (const [key, value] of Object.entries(overrides)) {
     if (typeof value === "string") {
-      out.push({ package: key, version: value.replace(/^npm:/, ""), scope: { type: "global" } });
+      const { package: name, selector } = splitOverrideKey(key);
+      out.push({
+        package: name,
+        version: value.replace(/^npm:/, ""),
+        scope: { type: "global" },
+        ...(selector ? { selector } : {}),
+      });
       continue;
     }
     if (value && typeof value === "object") {
@@ -50,10 +77,12 @@ export function flattenOverrides(
       for (const [child, childVal] of Object.entries(nested)) {
         if (child === ".") continue;
         if (typeof childVal === "string") {
+          const { package: name, selector } = splitOverrideKey(child);
           out.push({
-            package: child,
+            package: name,
             version: childVal.replace(/^npm:/, ""),
             scope: { type: "scoped", parent: key },
+            ...(selector ? { selector } : {}),
           });
         }
       }
@@ -62,28 +91,32 @@ export function flattenOverrides(
   return out;
 }
 
-export function extractExistingOverrides(pkg: PackageJson) {
+export function extractExistingOverrides(pkg: PackageJson): OverridePin[] {
   const npm = flattenOverrides(pkg.overrides);
   const pnpm = flattenOverrides(pkg.pnpm?.overrides);
-  const yarn = Object.entries(pkg.resolutions ?? {}).map(([key, version]) => {
+  const yarn = Object.entries(pkg.resolutions ?? {}).map(([key, version]): OverridePin => {
     const parts = key.split("/");
     if (parts.length >= 2 && !key.startsWith("@")) {
+      const child = splitOverrideKey(parts.slice(1).join("/"));
       return {
-        package: parts.slice(1).join("/"),
+        package: child.package,
         version,
         scope: { type: "scoped" as const, parent: parts[0]! },
+        ...(child.selector ? { selector: child.selector } : {}),
       };
     }
+    const global = splitOverrideKey(key);
     return {
-      package: key,
+      package: global.package,
       version,
       scope: { type: "global" as const },
+      ...(global.selector ? { selector: global.selector } : {}),
     };
   });
   const seen = new Set<string>();
   return [...npm, ...pnpm, ...yarn].filter((item) => {
     const parent = item.scope.type === "scoped" ? item.scope.parent : "";
-    const key = `${item.package}@${item.version}:${item.scope.type}:${parent}`;
+    const key = `${overrideKey(item)}@${item.version}:${item.scope.type}:${parent}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -93,18 +126,19 @@ export function extractExistingOverrides(pkg: PackageJson) {
 export function buildOverridesObject(entries: OverridePin[]): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const entry of entries) {
+    const key = overrideKey(entry);
     if (entry.scope.type === "scoped") {
       const parent = entry.scope.parent;
       const existing = result[parent];
       if (existing && typeof existing === "object") {
-        (existing as Record<string, string>)[entry.package] = entry.version;
+        (existing as Record<string, string>)[key] = entry.version;
       } else if (typeof existing === "undefined") {
-        result[parent] = { [entry.package]: entry.version };
+        result[parent] = { [key]: entry.version };
       } else {
-        result[entry.package] = entry.version;
+        result[key] = entry.version;
       }
     } else {
-      result[entry.package] = entry.version;
+      result[key] = entry.version;
     }
   }
   return result;
@@ -179,13 +213,36 @@ export function upsertOverride(
   const parent = pin.scope.type === "scoped" ? pin.scope.parent : "";
   const kept = extractExistingOverrides(pkg).filter((item) => {
     const itemParent = item.scope.type === "scoped" ? item.scope.parent : "";
+    // A forced selector pin replaces any prior global pin for the same package
+    // (plain or selector). Scoped pins still match on parent.
+    if (pin.scope.type === "global" && item.scope.type === "global") {
+      return item.package !== pin.package;
+    }
     return !(
       item.package === pin.package &&
       item.scope.type === pin.scope.type &&
-      itemParent === parent
+      itemParent === parent &&
+      (item.selector ?? "") === (pin.selector ?? "")
     );
   });
   return writeOverrides(cwd, [...kept, pin], manifestPath);
+}
+
+function deletePackageKeys(bag: Record<string, unknown>, packageName: string): void {
+  for (const key of Object.keys(bag)) {
+    const value = bag[key];
+    if (splitOverrideKey(key).package === packageName) {
+      delete bag[key];
+      continue;
+    }
+    if (value && typeof value === "object") {
+      const nested = value as Record<string, unknown>;
+      for (const child of Object.keys(nested)) {
+        if (splitOverrideKey(child).package === packageName) delete nested[child];
+      }
+      if (Object.keys(nested).length === 0) delete bag[key];
+    }
+  }
 }
 
 export function deleteOverrideFromManifest(
@@ -200,8 +257,8 @@ export function deleteOverrideFromManifest(
     pkg.resolutions as Record<string, unknown> | undefined,
   ];
   for (const bag of bags) {
-    if (!bag || !(packageName in bag)) continue;
-    delete bag[packageName];
+    if (!bag) continue;
+    deletePackageKeys(bag, packageName);
   }
   if (pkg.overrides && Object.keys(pkg.overrides).length === 0) delete pkg.overrides;
   if (pkg.pnpm?.overrides && Object.keys(pkg.pnpm.overrides).length === 0) {

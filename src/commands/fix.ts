@@ -21,6 +21,8 @@ export async function runFix(opts: {
   /** When set, only this audit package is planned or written. */
   package?: string;
   apply?: boolean;
+  /** Consciously write a triage proposal anyway. Requires apply. */
+  force?: boolean;
   skipInstall?: boolean;
   registry?: RegistryClient;
   audit?: AuditClient;
@@ -109,6 +111,7 @@ export async function runFix(opts: {
       graph,
       decision,
       apply: Boolean(opts.apply),
+      force: Boolean(opts.force),
       skipInstall: opts.skipInstall ?? true,
       registry,
       install: opts.install ?? createLiveInstall(),

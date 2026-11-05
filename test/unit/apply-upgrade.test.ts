@@ -455,12 +455,54 @@ describe("applyFix root upgrade", () => {
     });
     expect(applied.exitCode).toBe(0);
     expect(applied.messages.join("\n")).toMatch(/TRIAGE/);
+    expect(applied.messages.join("\n")).toMatch(/Proposal:/);
+    expect(applied.messages.join("\n")).toMatch(/--apply --force/);
     expect(applied.writtenFiles).toBeUndefined();
     const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
       overrides?: unknown;
     };
     expect(pkg.overrides).toBeUndefined();
     expect(existsSync(join(cwd, "security-metadata.json"))).toBe(false);
+  });
+
+  it("force-writes the triage proposal when --force is set", async () => {
+    const cwd = await nxProject();
+    const triageDecision = {
+      strategy: "triage" as const,
+      reason: "Breaking major pin needs a human decision.",
+      forcedVersion: "2.0.0",
+      scope: { type: "global" as const },
+    };
+    const applied = await applyFix({
+      cwd,
+      config: DEFAULT_CONFIG,
+      group: {
+        ...group,
+        advisories: [
+          {
+            severity: "high",
+            vulnerableRange: "< 2.0.0",
+            patchedVersion: "2.0.0",
+          },
+        ],
+        forcedVersion: "2.0.0",
+      },
+      graph: { ...graph, versions: ["1.4.1"] },
+      decision: triageDecision,
+      apply: true,
+      force: true,
+      registry: {
+        async verifyPackageVersion() {
+          return { exists: true, deprecated: null };
+        },
+      },
+    });
+    expect(applied.exitCode).toBe(0);
+    expect(applied.messages.join("\n")).toMatch(/FORCED/);
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
+      overrides?: Record<string, string>;
+    };
+    expect(pkg.overrides?.["smol-toml@>=1 <2.0.0"]).toBe("2.0.0");
   });
 
   it("explains why a breaking major root upgrade writes no override", async () => {

@@ -95,4 +95,25 @@ describe("writeOverrides", () => {
       },
     );
   });
+
+  it("writes a version-selector key so older major lines stay untouched", async () => {
+    await withDir(
+      {
+        "package.json": JSON.stringify({ name: "app" }),
+        "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: {} }),
+      },
+      async (dir) => {
+        writeOverrides(dir, [
+          {
+            package: "minimatch",
+            version: "11.0.1",
+            scope: { type: "global" },
+            selector: ">=7 <11.0.1",
+          },
+        ]);
+        const pkg = readPackageJson(dir);
+        expect(pkg.overrides).toEqual({ "minimatch@>=7 <11.0.1": "11.0.1" });
+      },
+    );
+  });
 });

@@ -13,8 +13,10 @@ import {
 import {
   breakingPinNote,
   breakingUpgradeNote,
+  formatTriageProposal,
   formatUpgradeTargets,
   pinLabel,
+  proposeTriageOverride,
   safeDirectCopyNote,
 } from "../decision/engine.js";
 import { resolvePackageManager } from "../graph/npm.js";
@@ -37,6 +39,8 @@ export type ApplyOptions = {
   graph: GraphAnalysis;
   decision: Decision;
   apply: boolean;
+  /** Consciously write a triage proposal anyway. Requires --apply. */
+  force?: boolean;
   skipInstall?: boolean;
   registry?: RegistryClient;
   audit?: AuditClient;
@@ -49,6 +53,10 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   const reportEarly = baseReport(opts, [], "Pre-apply validation");
 
   if (decision.strategy === "triage") {
+    const forced = decision.forcedVersion ?? group.forcedVersion;
+    if (opts.force && opts.apply && forced) {
+      return applyForcedTriageOverride(opts, forced, reportEarly);
+    }
     return applyTriage(opts, reportEarly);
   }
 
@@ -247,12 +255,146 @@ function noteBreakingUpgradeSkip(messages: string[], decision: Decision) {
   if (note) messages.push(note);
 }
 
+function triageProposal(opts: ApplyOptions) {
+  const forced = opts.decision.forcedVersion ?? opts.group.forcedVersion;
+  if (!forced) return undefined;
+  const scopes = opts.decision.scopes?.length ? opts.decision.scopes : [opts.decision.scope];
+  return proposeTriageOverride({
+    pkg: opts.group.package,
+    version: forced,
+    scopes,
+    installedVersions: opts.graph.versions,
+    advisories: opts.group.advisories,
+  });
+}
+
 function applyTriage(opts: ApplyOptions, report: ReportModel): CommandResult {
   const { group, decision } = opts;
+  const proposal = triageProposal(opts);
+  const messages = [`TRIAGE: ${decision.reason}`];
+  if (proposal) {
+    messages.push(formatTriageProposal(proposal));
+    if (opts.force && !opts.apply) {
+      messages.push(`Dry-run: would force-write ${proposal.entries.join(", ")}. Pass --apply with --force.`);
+    }
+  } else if (opts.force) {
+    messages.push("Nothing to force-write — the advisory names no patched version.");
+  }
   return {
     exitCode: 0,
     report: { ...report, title: `TRIAGE ${group.package}` },
-    messages: [`TRIAGE: ${decision.reason}`],
+    messages,
+  };
+}
+
+async function applyForcedTriageOverride(
+  opts: ApplyOptions,
+  forcedVersion: string,
+  reportEarly: ReportModel,
+): Promise<CommandResult> {
+  const { cwd, group, graph, decision } = opts;
+  const scopes = decision.scopes?.length ? decision.scopes : [decision.scope];
+  const proposal = proposeTriageOverride({
+    pkg: group.package,
+    version: forcedVersion,
+    scopes,
+    installedVersions: graph.versions,
+    advisories: group.advisories,
+  });
+  const messages: string[] = [];
+  const pinNote = breakingPinNote(group.package, graph.versions, forcedVersion);
+  if (pinNote) messages.push(pinNote);
+  messages.push(
+    `FORCED: writing triage proposal ${proposal.entries.join(", ")}. You chose to pin despite triage.`,
+  );
+
+  const existing = readPins(cwd);
+  const issues = (
+    await Promise.all(
+      proposal.pins.map((pin) =>
+        runPreApplyGate({
+          pkg: group.package,
+          forcedVersion,
+          graph,
+          advisories: group.advisories,
+          scope: pin.scope,
+          existing,
+          registry: opts.registry,
+        }),
+      ),
+    )
+  ).flat();
+  const seenIssue = new Set<string>();
+  const uniqueIssues = issues.filter((issue) => {
+    const key = `${issue.code}:${issue.message}`;
+    if (seenIssue.has(key)) return false;
+    seenIssue.add(key);
+    return true;
+  });
+  const blocked = blockingIssues(uniqueIssues);
+  const report = baseReport(opts, uniqueIssues, "Forced triage override");
+  if (blocked.length) {
+    return {
+      exitCode: 1,
+      report: { ...report, title: `Rejected: ${blocked[0]!.code}` },
+      messages: [
+        `Not writing package.json — ${blocked[0]!.code}`,
+        ...blocked.map((i) => (i.hint ? `${i.message} (${i.hint})` : i.message)),
+      ],
+    };
+  }
+
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, ...extraSnapshotFiles(cwd)]);
+  for (const pin of proposal.pins) {
+    upsertOverride(
+      cwd,
+      {
+        package: pin.package,
+        version: pin.version,
+        scope: pin.scope,
+        ...(pin.selector ? { selector: pin.selector } : {}),
+      },
+      group.manifestPath,
+    );
+  }
+
+  if (!opts.skipInstall && opts.install) {
+    const installed = await opts.install.install(cwd);
+    if (!installed.ok) {
+      restoreFiles(cwd, snap);
+      messages.push(installed.error ?? "npm install failed");
+      return {
+        exitCode: 1,
+        report: { ...report, title: "Install failed" },
+        messages,
+      };
+    }
+  }
+
+  const post = await runPostVerify({
+    cwd,
+    pkg: group.package,
+    forcedVersion,
+    advisories: group.advisories,
+    audit: opts.audit,
+  });
+  const postBlocked = blockingIssues(post);
+  if (postBlocked.length && !opts.skipInstall) {
+    restoreFiles(cwd, snap);
+    messages.push(...postBlocked.map((i) => i.message));
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Install failed", validation: [...uniqueIssues, ...post] },
+      messages,
+    };
+  }
+
+  messages.push(`Wrote ${proposal.entries.join(", ")}. package.json was updated.`);
+  return {
+    exitCode: 0,
+    report: { ...reportEarly, ...report, title: `Forced ${group.package}@${forcedVersion}` },
+    messages,
+    writtenFiles: ["package.json"],
   };
 }
 

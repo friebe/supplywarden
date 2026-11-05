@@ -277,7 +277,12 @@ describe("why / fix", () => {
     expect(row?.summary).toMatch(/old-tool@1\.0\.0 asks for marked@1\.0\.0/);
     expect(row?.summary).toMatch(/That parent can fail to build/);
     expect(row?.summary).toMatch(/human decision/);
-    expect(row?.commands).toEqual(["supplywarden why marked"]);
+    expect(row?.summary).toMatch(/Proposal:/);
+    expect(row?.summary).toMatch(/--apply --force/);
+    expect(row?.commands).toEqual([
+      "supplywarden fix marked --apply --force",
+      "supplywarden why marked",
+    ]);
   });
 
   it("tells you to upgrade the root when the safe version is outside the installed range", async () => {
@@ -499,8 +504,50 @@ describe("validation gates", () => {
       expect(result.messages.join("\n")).toMatch(/TRIAGE/);
       expect(result.messages.join("\n")).toMatch(/Breaking major pin: uuid@9\.0\.0 → 11\.1\.1/);
       expect(result.messages.join("\n")).toMatch(/human decision/);
+      expect(result.messages.join("\n")).toMatch(/Proposal: "uuid@>=9 <11\.1\.1": "11\.1\.1"/);
+      expect(result.messages.join("\n")).toMatch(/--apply --force/);
       const pkg = readPackageJson(dir);
       expect(pkg.overrides?.uuid).toBeUndefined();
+      expect(pkg.overrides?.["uuid@>=9 <11.1.1"]).toBeUndefined();
+    });
+  });
+
+  it("force-writes a triage major-jump proposal as a version selector", async () => {
+    await withFixture("npm-still-vulnerable", async (dir) => {
+      await writeFile(
+        join(dir, ".supplywardenrc.json"),
+        JSON.stringify({ upgradeRootThreshold: 1 }),
+      );
+      const result = await runFix({
+        cwd: dir,
+        package: "uuid",
+        audit: createStaticAudit([
+          {
+            package: "uuid",
+            severity: "high",
+            range: "< 11.1.1",
+            ghsaId: "GHSA-uuid-major-force",
+            patchedVersion: "10.0.0",
+          },
+        ]),
+        apply: true,
+        force: true,
+        skipInstall: true,
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+          async versionsNewerThan() {
+            return [];
+          },
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.messages.join("\n")).toMatch(/FORCED/);
+      expect(result.messages.join("\n")).toMatch(/uuid@>=9 <11\.1\.1/);
+      const pkg = readPackageJson(dir);
+      expect(pkg.overrides?.uuid).toBeUndefined();
+      expect(pkg.overrides?.["uuid@>=9 <11.1.1"]).toBe("11.1.1");
     });
   });
 

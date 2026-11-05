@@ -3,9 +3,11 @@ import {
   breakingPinNote,
   breakingUpgradeNote,
   decide,
+  formatTriageProposal,
   formatUpgradeTargets,
   lookupFromRegistry,
   pinLabel,
+  proposeTriageOverride,
   rangeRejectionNote,
   safeDirectCopyNote,
   resolveUpgradeDecision,
@@ -233,10 +235,25 @@ function toFinding(
   }
 
   if (decision.strategy === "triage") {
+    const forced = decision.forcedVersion ?? group.forcedVersion;
+    const scopes = decision.scopes?.length ? decision.scopes : [decision.scope];
+    const proposal = forced
+      ? proposeTriageOverride({
+          pkg: group.package,
+          version: forced,
+          scopes,
+          installedVersions: graph.versions,
+          advisories: group.advisories,
+        })
+      : undefined;
     return {
       ...base,
-      summary: decision.reason,
-      commands: [`supplywarden why ${group.package}`],
+      summary: [decision.reason, proposal ? formatTriageProposal(proposal) : undefined]
+        .filter(Boolean)
+        .join(" "),
+      commands: proposal
+        ? [proposal.forceCommand, `supplywarden why ${group.package}`]
+        : [`supplywarden why ${group.package}`],
     };
   }
 

@@ -98,12 +98,16 @@ withGlobals(
       "--apply",
       "write package.json overrides, or run a root upgrade via the package manager",
     )
+    .option(
+      "--force",
+      "consciously write a triage proposal anyway (requires --apply; skips the automatic gate)",
+    )
     .option("--skip-install", "do not run npm/pnpm/yarn install")
     .description("Plan a fix from live audit; --apply writes the pin"),
 ).action(
   async (
     pkg: string | undefined,
-    opts: { apply?: boolean; skipInstall?: boolean },
+    opts: { apply?: boolean; force?: boolean; skipInstall?: boolean },
     cmd: Command,
   ) => {
     emit(
@@ -111,6 +115,7 @@ withGlobals(
         cwd: cwdOf(cmd),
         package: pkg,
         apply: opts.apply,
+        force: opts.force,
         skipInstall: Boolean(opts.skipInstall),
       }),
       cmd,

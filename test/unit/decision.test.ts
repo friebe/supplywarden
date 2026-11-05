@@ -13,6 +13,8 @@ import {
   vulnerableReach,
   safeDirectCopyNote,
   breakingPinNote,
+  majorJumpSelectorRange,
+  proposeTriageOverride,
 } from "../../src/decision/engine.js";
 import { DEFAULT_CONFIG } from "../../src/config.js";
 import { createOfflineRegistry } from "../../src/registry/verify.js";
@@ -698,6 +700,45 @@ describe("rangeRejectionNote", () => {
     ).toBe(
       "body-parser@1.20.1 asks for qs@~6.5.0. That does not include 6.11.2. The pin forces qs@6.11.2. That parent can fail to build.",
     );
+  });
+});
+
+describe("triage override proposal", () => {
+  it("builds a version selector that leaves older majors untouched", () => {
+    const advisories = [
+      { severity: "high" as const, vulnerableRange: "< 11.0.1", patchedVersion: "11.0.1" },
+    ];
+    expect(majorJumpSelectorRange(["3.1.2", "7.4.6"], advisories, "11.0.1")).toBe(">=3 <11.0.1");
+    // Only the vulnerable 7.x line is installed → start at 7, leave nothing below remapped.
+    expect(majorJumpSelectorRange(["7.4.6"], advisories, "11.0.1")).toBe(">=7 <11.0.1");
+    const proposal = proposeTriageOverride({
+      pkg: "minimatch",
+      version: "11.0.1",
+      scopes: [{ type: "global" }],
+      installedVersions: ["7.4.6"],
+      advisories,
+    });
+    expect(proposal.entries).toEqual(['"minimatch@>=7 <11.0.1": "11.0.1"']);
+    expect(proposal.forceCommand).toBe("supplywarden fix minimatch --apply --force");
+  });
+
+  it("falls back to a plain or scoped pin when there is no major jump", () => {
+    const proposal = proposeTriageOverride({
+      pkg: "qs",
+      version: "6.11.2",
+      scopes: [
+        { type: "scoped", parent: "express" },
+        { type: "scoped", parent: "body-parser" },
+      ],
+      installedVersions: ["6.5.0"],
+      advisories: [
+        { severity: "high", vulnerableRange: "< 6.11.0", patchedVersion: "6.11.2" },
+      ],
+    });
+    expect(proposal.entries).toEqual([
+      '"express": { "qs": "6.11.2" }',
+      '"body-parser": { "qs": "6.11.2" }',
+    ]);
   });
 });
 
