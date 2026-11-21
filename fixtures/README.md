@@ -1,19 +1,15 @@
 # Fixtures
 
-Mini projects for testing supplywarden without `npm link` into real repos.
+Mini projects for tests. One directory is one lockfile, because the CLI reads a single package manager per folder (`pnpm-lock.yaml`, then `yarn.lock`, then `package-lock.json`).
 
-| Fixture | Scenario |
-|---------|----------|
-| `npm-simple` | express → qs@6.5.0 |
-| `pnpm-simple` | Same tree in `pnpm-lock.yaml` (v9 snapshots) |
-| `yarn-simple` | Same tree in classic `yarn.lock` |
-| `yarn-berry-simple` | Same tree in Yarn Berry `yarn.lock` |
-| `npm-five-overrides` | 5 overrides in package.json |
-| `npm-removable` | Override, vuln already gone |
-| `npm-overdue` | reviewBy expired + HIGH |
-| `npm-drift` | metadata without package.json override |
-| `npm-scoped-override` | `{ "body-parser": { "qs": "6.11.2" } }` |
-| `npm-noop-override` | Lockfile already on patched version |
-| `npm-mixed` | Kitchen-sink board. **Without audit:** OVERDUE production (`qs`) + development (`picomatch` via eslint), OK (`ip`), Ok·verified KEEP (`follow-redirects`), weak no-op override (`nth-check`), optional (`fsevents`), REMOVABLE `already-at-patched` (`lodash`), `not-in-tree` (`request`), `no-vulnerable-version` (`debug`), DRIFT (`minimist`), PENDING_VERIFY (`semver`), VERIFY_FAILED (`tar`), UNTRACKED (`ws`). **With `alerts/mixed.json`:** NEW upgrade `smol-toml` (only root `nx@23.2.0` → **23.2.5**, not 23.2.1), NEW mixed upgrade `tslib` (`nx` + `lodash`), NEW override `serialize-javascript` (4 roots > threshold). |
-| `alerts/mixed.json` | Dependabot dump for `npm-mixed`. Live `npm audit` will not invent these fake packages — pass the file to `check`: `pnpm try -- check fixtures/alerts/mixed.json --cwd fixtures/npm-mixed --open` |
-| `npm-mixed/supplywarden.registry.json` | Packument stubs. Real `nx@23.2.1` already depends on patched `smol-toml@1.6.1`; the stub keeps 23.2.1 on `^1.3.1` and names **23.2.5** as the first safe root. |
+| Fixture | Why it exists |
+|---------|----------------|
+| `npm-simple` | express → qs@6.5.0, no override. The usual audit finding. |
+| `pnpm-simple` | Same tree in a pnpm v9 lockfile. |
+| `yarn-simple` | Same tree in a classic Yarn lockfile. |
+| `yarn-berry-simple` | Same tree in a Yarn Berry lockfile. |
+| `npm-noop-override` | express tree whose lockfile is already on the patched qs. |
+| `npm-still-vulnerable` | uuid@9, used when a pin has to leave the advisory range. |
+| `npm-mixed` | Overrides that stay, overrides that can go, qs pinned only under express and body-parser, `@demo/core` with peer `@demo/common`, and `old-tool` whose newer release still depends on vulnerable marked. `supplywarden.registry.json` stubs those packuments. |
+| `npm-migrations` | Three upgrade families. `@angular/core` + `@angular/common` (forms stays, its peer already allows the new core) move with one `npx ng update`. `nx` uses `npx nx migrate nx@<version>`. `storybook` + `@storybook/react` (addon-essentials stays) use one `npx storybook@<version> upgrade`. The registry stub proves the next version. |
+| `audit/` | Saved npm audit JSON for the parser. Not a project. |

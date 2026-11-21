@@ -78,7 +78,9 @@ function collect(findings: AuditFinding[]): AuditFinding[] {
 function parseV2(raw: { vulnerabilities?: Record<string, AuditV2Entry> }): AuditFinding[] {
   const findings: AuditFinding[] = [];
   for (const [pkg, entry] of Object.entries(raw.vulnerabilities ?? {})) {
-    const vias = (entry.via ?? []).filter((via): via is AuditVia => typeof via === "object" && via !== null);
+    const vias = (entry.via ?? []).filter(
+      (via): via is AuditVia => typeof via === "object" && via !== null,
+    );
     if (!vias.length) continue;
     for (const via of vias) {
       const name = via.name ?? via.dependency ?? entry.name ?? pkg;
@@ -109,7 +111,8 @@ function parseV1(raw: { advisories?: Record<string, AuditV1Advisory> }): AuditFi
       ghsaId: ghsaFrom(advisory.github_advisory_id ?? advisory.ghsa, advisory.url),
       cveId: cveFrom(advisory.cves),
       title: advisory.title,
-      patchedVersion: patchedFromPatchedRange(advisory.patched_versions) ?? patchedFromVulnerableRange(range),
+      patchedVersion:
+        patchedFromPatchedRange(advisory.patched_versions) ?? patchedFromVulnerableRange(range),
     });
   }
   return findings;
@@ -134,7 +137,8 @@ function parseNdjson(text: string): AuditFinding[] {
         ghsaId: ghsaFrom(advisory.github_advisory_id ?? advisory.ghsa, advisory.url),
         cveId: cveFrom(advisory.cves),
         title: advisory.title,
-        patchedVersion: patchedFromPatchedRange(advisory.patched_versions) ?? patchedFromVulnerableRange(range),
+        patchedVersion:
+          patchedFromPatchedRange(advisory.patched_versions) ?? patchedFromVulnerableRange(range),
       });
     } catch {
       continue;
@@ -143,24 +147,39 @@ function parseNdjson(text: string): AuditFinding[] {
   return findings;
 }
 
-export function parseNpmAuditJson(stdout: string | unknown): AuditFinding[] {
+export function auditFailureMessage(stdout: unknown): string | undefined {
+  const parsed = typeof stdout === "string" ? parseJson(stdout) : stdout;
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const error = (parsed as { error?: { code?: string; summary?: string } }).error;
+  if (!error || typeof error !== "object") return undefined;
+  const message = [error.code, error.summary].filter(Boolean).join(": ");
+  return message || undefined;
+}
+
+function parseJson(stdout: string): unknown {
+  const trimmed = stdout.trim();
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) return undefined;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+export function parseNpmAuditJson(stdout: unknown): AuditFinding[] {
   if (typeof stdout === "string") {
     const trimmed = stdout.trim();
     if (!trimmed) return [];
-    try {
-      return parseNpmAuditJson(JSON.parse(trimmed));
-    } catch {
-      const start = trimmed.indexOf("{");
-      const end = trimmed.lastIndexOf("}");
-      if (start >= 0 && end > start) {
-        try {
-          return parseNpmAuditJson(JSON.parse(trimmed.slice(start, end + 1)));
-        } catch {
-          return collect(parseNdjson(trimmed));
-        }
-      }
-      return collect(parseNdjson(trimmed));
-    }
+    const parsed = parseJson(trimmed);
+    if (parsed !== undefined) return parseNpmAuditJson(parsed);
+    return collect(parseNdjson(trimmed));
   }
   if (Array.isArray(stdout)) {
     return collect(stdout.flatMap((item) => parseNpmAuditJson(item)));

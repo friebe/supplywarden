@@ -1,8 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parseAllDocuments } from "yaml";
 import type { GraphAnalysis } from "../types.js";
 import { analyzeFlatGraph, emptyGraph, type DirectDep, type FlatNode } from "./flat.js";
+import {
+  catalogSpec,
+  findPnpmRoot,
+  importerPackageName,
+  isWorkspaceSpecifier,
+  readCatalogs,
+  type Catalogs,
+} from "./workspace.js";
 
 type PnpmImporterBag = Record<string, { specifier?: string; version?: string } | string>;
 
@@ -33,18 +41,16 @@ export function pnpmLockPath(cwd: string): string {
 }
 
 export function hasPnpmLock(cwd: string): boolean {
-  return existsSync(pnpmLockPath(cwd));
+  const root = findPnpmRoot(cwd);
+  return Boolean(root && existsSync(pnpmLockPath(root)));
 }
 
 export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
-  const path = pnpmLockPath(cwd);
+  const root = findPnpmRoot(cwd) ?? cwd;
+  const path = pnpmLockPath(root);
   if (!existsSync(path)) return emptyGraph(pkgName);
-  let lock: PnpmLock;
-  try {
-    lock = parseYaml(readFileSync(path, "utf8")) as PnpmLock;
-  } catch {
-    return emptyGraph(pkgName);
-  }
+  const lock = readPnpmLock(path);
+  if (!lock) return emptyGraph(pkgName);
 
   const nodes = new Map<string, FlatNode>();
   const snapshots = lock.snapshots ?? {};
@@ -54,12 +60,13 @@ export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
   for (const key of keys) {
     const parsed = parsePnpmKey(key);
     if (!parsed) continue;
-    const snap = snapshots[key] ?? packages[key] ?? {};
+    const pkgMeta = packages[key];
+    const snap = snapshots[key];
     const deps = {
-      ...(packages[key]?.dependencies ?? {}),
-      ...(snap.dependencies ?? {}),
-      ...(packages[key]?.optionalDependencies ?? {}),
-      ...(snap.optionalDependencies ?? {}),
+      ...pkgMeta?.dependencies,
+      ...snap?.dependencies,
+      ...pkgMeta?.optionalDependencies,
+      ...snap?.optionalDependencies,
     };
     const node: FlatNode = {
       id: key,
@@ -68,17 +75,22 @@ export function analyzePnpmGraph(cwd: string, pkgName: string): GraphAnalysis {
       deps: Object.entries(deps).map(([name, spec]) => ({ name, spec: String(spec) })),
     };
     nodes.set(key, node);
-    if (!nodes.has(`${parsed.name}@${parsed.version}`)) {
-      nodes.set(`${parsed.name}@${parsed.version}`, node);
+    // A peer snapshot (`foo@1.0.0(bar@2)`) holds the edges. The bare `packages` entry often does not.
+    const short = `${parsed.name}@${parsed.version}`;
+    const previous = nodes.get(short);
+    if (!previous || (previous.deps.length === 0 && node.deps.length > 0)) {
+      nodes.set(short, node);
     }
   }
 
   const directs: DirectDep[] = [];
+  const catalogs = readCatalogs(root);
   const importers = lock.importers ?? { ".": lock };
-  for (const importer of Object.values(importers)) {
-    pushImporterBag(directs, nodes, importer.dependencies, "prod");
-    pushImporterBag(directs, nodes, importer.devDependencies, "dev");
-    pushImporterBag(directs, nodes, importer.optionalDependencies, "opt");
+  for (const [key, importer] of Object.entries(importers)) {
+    const importerName = importerPackageName(root, key);
+    pushImporterBag(directs, nodes, importer.dependencies, "prod", importerName, catalogs);
+    pushImporterBag(directs, nodes, importer.devDependencies, "dev", importerName, catalogs);
+    pushImporterBag(directs, nodes, importer.optionalDependencies, "opt", importerName, catalogs);
   }
 
   return analyzeFlatGraph(pkgName, nodes, directs, (from, depName, spec) =>
@@ -91,20 +103,56 @@ function pushImporterBag(
   nodes: Map<string, FlatNode>,
   bag: PnpmImporterBag | undefined,
   kind: DirectDep["bag"],
+  importer: string | undefined,
+  catalogs: Catalogs,
 ): void {
   if (!bag) return;
   for (const [name, raw] of Object.entries(bag)) {
-    const specifier = typeof raw === "string" ? raw : raw.specifier ?? "";
-    const versionField = typeof raw === "string" ? raw : raw.version ?? "";
-    const node = resolvePnpmDep(nodes, undefined, name, versionField) ?? resolvePnpmDep(nodes, undefined, name, specifier);
+    const specifier = typeof raw === "string" ? raw : (raw.specifier ?? "");
+    const versionField = typeof raw === "string" ? raw : (raw.version ?? "");
+    if (isWorkspaceSpecifier(specifier, versionField)) continue;
+    const node =
+      resolvePnpmDep(nodes, undefined, name, versionField) ??
+      resolvePnpmDep(nodes, undefined, name, specifier);
     if (!node) continue;
+    const catalog = catalogSpec(catalogs, specifier, name);
+    const range = catalog ? catalog.range || versionField : specifier || versionField;
     directs.push({
       name,
       version: node.version,
-      range: specifier || versionField,
+      range,
       bag: kind,
       id: node.id,
+      ...(importer ? { importer } : {}),
+      ...(catalog ? { catalog: catalog.name } : {}),
     });
+  }
+}
+
+/** The project graph is the last YAML document. A leading boot document only lists pnpm itself. */
+function readPnpmLock(path: string): PnpmLock | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const docs: PnpmLock[] = [];
+    for (const doc of parseAllDocuments(text)) {
+      try {
+        const value = doc.toJS() as PnpmLock | null;
+        if (value && typeof value === "object") docs.push(value);
+      } catch {
+        // Skip a document that does not decode. The project graph may still follow it.
+      }
+    }
+    const project = docs.filter(
+      (doc) => doc.importers || doc.packages || doc.snapshots || doc.dependencies,
+    );
+    return project.at(-1) ?? docs.at(-1);
+  } catch {
+    return undefined;
   }
 }
 
@@ -144,7 +192,9 @@ function resolvePnpmDep(
   for (const key of candidates) {
     if (key && nodes.has(key)) return nodes.get(key);
   }
-  const parsed = parsePnpmKey(trimmed.includes("@") || trimmed.startsWith("/") ? trimmed : `${depName}@${trimmed}`);
+  const parsed = parsePnpmKey(
+    trimmed.includes("@") || trimmed.startsWith("/") ? trimmed : `${depName}@${trimmed}`,
+  );
   if (parsed) {
     const hit = nodes.get(`${parsed.name}@${parsed.version}`);
     if (hit) return hit;

@@ -1,22 +1,31 @@
-import { findDuplicate, dedupeOrSupersede } from "../validation/collisions.js";
 import { blockingIssues, runPreApplyGate } from "../validation/override-gate.js";
 import { runPostVerify } from "../validation/post-verify.js";
-import { readMetadata, writeMetadata, newEntryId } from "../metadata/store.js";
-import { syncOverridesToPackageJson } from "../metadata/sync.js";
-import { resolvePackageManager } from "../graph/npm.js";
-import { addDaysIso, nowIso } from "../util/time.js";
+import { extractExistingOverrides, readPackageJson, upsertOverride } from "../metadata/sync.js";
+import { nowIso } from "../util/time.js";
+import { extraSnapshotFiles } from "../graph/workspace.js";
 import { PROJECT_SNAPSHOT_FILES, restoreFiles, snapshotFiles } from "../util/snapshot.js";
-import { actorName } from "../config.js";
 import { createLiveInstall } from "../install/client.js";
-import { quotedUpgradeCommands, rootUpgradeCommands } from "./upgrade-command.js";
-import { breakingPinNote, breakingUpgradeNote, formatUpgradeTargets } from "../decision/engine.js";
+import {
+  lockfileRefreshCommand,
+  quotedUpgradeCommands,
+  rootUpgradeCommands,
+} from "./upgrade-command.js";
+import {
+  breakingPinNote,
+  breakingUpgradeNote,
+  formatTriageProposal,
+  formatUpgradeTargets,
+  pinLabel,
+  proposeTriageOverride,
+  safeDirectCopyNote,
+} from "../decision/engine.js";
+import { resolvePackageManager } from "../graph/npm.js";
 import type {
   AuditClient,
   CommandResult,
   Decision,
   GraphAnalysis,
   InstallClient,
-  MetadataEntry,
   PackageAlertGroup,
   RegistryClient,
   ReportModel,
@@ -30,6 +39,8 @@ export type ApplyOptions = {
   graph: GraphAnalysis;
   decision: Decision;
   apply: boolean;
+  /** Consciously write a triage proposal anyway. Requires --apply. */
+  force?: boolean;
   skipInstall?: boolean;
   registry?: RegistryClient;
   audit?: AuditClient;
@@ -38,11 +49,15 @@ export type ApplyOptions = {
 
 export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
   const messages: string[] = [];
-  const { cwd, config, group, graph, decision } = opts;
+  const { cwd, group, graph, decision } = opts;
   const reportEarly = baseReport(opts, [], "Pre-apply validation");
 
-  if (decision.strategy === "wait") {
-    return applyWait(opts, reportEarly);
+  if (decision.strategy === "triage") {
+    const forced = decision.forcedVersion ?? group.forcedVersion;
+    if (opts.force && opts.apply && forced) {
+      return applyForcedTriageOverride(opts, forced, reportEarly);
+    }
+    return applyTriage(opts, reportEarly);
   }
 
   const forcedVersion = decision.forcedVersion ?? group.forcedVersion;
@@ -52,25 +67,41 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     return {
       exitCode: 1,
       report,
-      messages: [
-        "Not writing package.json — no patched version that closes the advisory",
-      ],
+      messages: ["Not writing package.json — no patched version that closes the advisory"],
     };
   }
 
-  const metadata = readMetadata(cwd, config);
-  const issues = await runPreApplyGate({
-    pkg: group.package,
-    forcedVersion,
-    graph,
-    advisories: group.advisories,
-    scope: decision.scope,
-    existing: metadata.entries,
-    registry: opts.registry,
+  if (decision.strategy === "refresh") {
+    return applyLockfileRefresh(opts, forcedVersion);
+  }
+
+  const existing = readPins(cwd);
+  const scopes = decision.scopes?.length ? decision.scopes : [decision.scope];
+  const issues = (
+    await Promise.all(
+      scopes.map((scope) =>
+        runPreApplyGate({
+          pkg: group.package,
+          forcedVersion,
+          graph,
+          advisories: group.advisories,
+          scope,
+          existing,
+          registry: opts.registry,
+        }),
+      ),
+    )
+  ).flat();
+  const seenIssue = new Set<string>();
+  const uniqueIssues = issues.filter((issue) => {
+    const key = `${issue.code}:${issue.message}`;
+    if (seenIssue.has(key)) return false;
+    seenIssue.add(key);
+    return true;
   });
 
-  const blocked = blockingIssues(issues);
-  const report = baseReport(opts, issues, "Pre-apply validation");
+  const blocked = blockingIssues(uniqueIssues);
+  const report = baseReport(opts, uniqueIssues, "Pre-apply validation");
 
   if (decision.strategy === "upgrade") {
     return applyRootUpgrade(opts, { messages, blocked, report });
@@ -78,16 +109,19 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
 
   const pinNote = breakingPinNote(group.package, graph.versions, forcedVersion);
   if (pinNote) messages.push(pinNote);
+  const directNote = safeDirectCopyNote(graph, group.advisories, scopes);
+  if (directNote) messages.push(directNote);
 
+  const where = pinLabel(group.package, forcedVersion, scopes);
   if (!opts.apply) {
-    messages.push("Dry-run: pass --apply to write package.json and security-metadata.json");
+    messages.push(`Dry-run: ${where} Pass --apply to write it into package.json.`);
     return { exitCode: blocked.length ? 1 : 0, report, messages };
   }
 
   if (blocked.length) {
     return {
       exitCode: 1,
-      report: { ...report, title: `ABGELEHNT: ${blocked[0]!.code}` },
+      report: { ...report, title: `Rejected: ${blocked[0]!.code}` },
       messages: [
         `Not writing package.json — ${blocked[0]!.code}`,
         ...blocked.map((i) => (i.hint ? `${i.message} (${i.hint})` : i.message)),
@@ -95,47 +129,24 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
     };
   }
 
-  const files = [config.metadataPath, "package.json"];
-  const snap = snapshotFiles(cwd, files);
-
-  const duplicate = findDuplicate(metadata, group.package, group.advisories[0]?.ghsaId);
-  const entry: MetadataEntry = {
-    id: duplicate?.id ?? newEntryId(),
-    status: "pending_verify",
-    package: group.package,
-    forcedVersion,
-    scope: decision.scope,
-    advisories: group.advisories,
-    reason: decision.reason,
-    strategy: decision.strategy,
-    rootPackages: graph.roots.map((r) => r.name),
-    dependencyChains: graph.chains.map((c) => c.path.join(" → ")),
-    packageManager: resolvePackageManager(cwd),
-    manifestPath: group.manifestPath,
-    createdAt: duplicate?.createdAt ?? nowIso(),
-    createdBy: actorName(),
-    reviewBy: addDaysIso(config.defaultReviewDays),
-    reviewReason: "Verify whether a root-package upgrade can replace this override",
-    needsReview: false,
-  };
-
-  const { metadata: next } = dedupeOrSupersede(metadata, entry);
-  writeMetadata(cwd, config, next);
-  if (decision.strategy === "override") {
-    syncOverridesToPackageJson(cwd, next, group.manifestPath);
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, ...extraSnapshotFiles(cwd)]);
+  for (const scope of scopes) {
+    upsertOverride(
+      cwd,
+      { package: group.package, version: forcedVersion, scope },
+      group.manifestPath,
+    );
   }
 
   if (!opts.skipInstall && opts.install) {
     const installed = await opts.install.install(cwd);
     if (!installed.ok) {
       restoreFiles(cwd, snap);
-      persistApplyVerifyFailed(cwd, config, entry, decision.strategy, group.manifestPath, installed.error ?? "install failed");
       messages.push(installed.error ?? "npm install failed");
       return {
         exitCode: 1,
-        report: { ...report, title: "VERIFY_FAILED peer conflict" },
+        report: { ...report, title: "Install failed" },
         messages,
-        writtenFiles: [config.metadataPath, "package.json"],
       };
     }
   }
@@ -151,35 +162,92 @@ export async function applyFix(opts: ApplyOptions): Promise<CommandResult> {
 
   if (postBlocked.length && !opts.skipInstall) {
     restoreFiles(cwd, snap);
-    persistApplyVerifyFailed(
-      cwd,
-      config,
-      entry,
-      decision.strategy,
-      group.manifestPath,
-      postBlocked.map((i) => i.message).join("; "),
-    );
     messages.push(...postBlocked.map((i) => i.message));
     return {
       exitCode: 1,
-      report: { ...report, title: "VERIFY_FAILED", validation: [...issues, ...post] },
+      report: { ...report, title: "Install failed", validation: [...uniqueIssues, ...post] },
       messages,
-      writtenFiles: [config.metadataPath, "package.json"],
     };
   }
 
-  const verified = readMetadata(cwd, config);
-  const saved = verified.entries.find((e) => e.id === entry.id);
-  if (saved) saved.status = "active";
-  writeMetadata(cwd, config, verified);
-
-  messages.push(`Entry ${entry.id} active (${decision.strategy} ${group.package}@${forcedVersion})`);
+  messages.push(`Wrote ${where} package.json was updated.`);
   return {
     exitCode: 0,
     report: { ...report, title: `Applied ${group.package}@${forcedVersion}` },
     messages,
-    writtenFiles: [config.metadataPath, "package.json"],
+    writtenFiles: ["package.json"],
   };
+}
+
+async function applyLockfileRefresh(
+  opts: ApplyOptions,
+  forcedVersion: string,
+): Promise<CommandResult> {
+  const { cwd, decision, group } = opts;
+  const command = lockfileRefreshCommand(resolvePackageManager(cwd), group.package);
+  const report = baseReport(opts, [], "Lockfile refresh");
+
+  if (!opts.apply) {
+    return {
+      exitCode: 0,
+      report,
+      messages: [`Dry-run: run \`${command.display}\` before changing a root or writing an override.`],
+    };
+  }
+
+  if (opts.skipInstall || !opts.install?.runCommand) {
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Lockfile refresh needs install" },
+      messages: [`Not updating the lockfile — run \`${command.display}\`.`],
+    };
+  }
+
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, ...extraSnapshotFiles(cwd)]);
+  const refreshed = await opts.install.runCommand(cwd, command.file, command.args);
+  if (!refreshed.ok) {
+    restoreFiles(cwd, snap);
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Lockfile refresh failed" },
+      messages: [refreshed.error ?? `${command.display} failed`],
+    };
+  }
+
+  const post = await runPostVerify({
+    cwd,
+    pkg: group.package,
+    forcedVersion,
+    advisories: group.advisories,
+    audit: opts.audit,
+  });
+  const blocked = blockingIssues(post);
+  if (blocked.length) {
+    restoreFiles(cwd, snap);
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Lockfile refresh did not close advisory", validation: post },
+      messages: blocked.map((issue) => issue.message),
+    };
+  }
+
+  return {
+    exitCode: 0,
+    report: { ...report, title: `Refreshed ${group.package}@${forcedVersion}` },
+    messages: [`${command.display} closed the advisory. No root upgrade or override was needed.`],
+    writtenFiles: PROJECT_SNAPSHOT_FILES.filter((file) => file.endsWith("lock.yaml") || file.endsWith("lock.json")),
+  };
+}
+
+function readPins(cwd: string): Array<{ package: string; forcedVersion: string }> {
+  try {
+    return extractExistingOverrides(readPackageJson(cwd)).map((pin) => ({
+      package: pin.package,
+      forcedVersion: pin.version,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function noteBreakingUpgradeSkip(messages: string[], decision: Decision) {
@@ -187,68 +255,147 @@ function noteBreakingUpgradeSkip(messages: string[], decision: Decision) {
   if (note) messages.push(note);
 }
 
-function applyWait(opts: ApplyOptions, report: ReportModel): CommandResult {
-  const { cwd, config, group, graph, decision } = opts;
-  const reviewBy = addDaysIso(config.defaultReviewDays);
-  const messages = [
-    decision.reason,
-    opts.apply
-      ? `Recorded WAIT for ${group.package} until ${reviewBy} (no override written)`
-      : `WAIT: no override/upgrade this cycle — pass --apply to record until ${reviewBy}`,
-  ];
-  if (!opts.apply) {
-    return { exitCode: 0, report: { ...report, title: "WAIT" }, messages };
-  }
+function triageProposal(opts: ApplyOptions) {
+  const forced = opts.decision.forcedVersion ?? opts.group.forcedVersion;
+  if (!forced) return undefined;
+  const scopes = opts.decision.scopes?.length ? opts.decision.scopes : [opts.decision.scope];
+  return proposeTriageOverride({
+    pkg: opts.group.package,
+    version: forced,
+    scopes,
+    installedVersions: opts.graph.versions,
+    advisories: opts.group.advisories,
+  });
+}
 
-  const metadata = readMetadata(cwd, config);
-  const duplicate = findDuplicate(metadata, group.package, group.advisories[0]?.ghsaId);
-  const entry: MetadataEntry = {
-    id: duplicate?.id ?? newEntryId(),
-    status: "active",
-    package: group.package,
-    forcedVersion: decision.forcedVersion ?? group.forcedVersion ?? "?",
-    scope: decision.scope,
-    advisories: group.advisories,
-    reason: decision.reason,
-    strategy: "wait",
-    rootPackages: graph.roots.map((r) => r.name),
-    dependencyChains: graph.chains.map((c) => c.path.join(" → ")),
-    packageManager: resolvePackageManager(cwd),
-    manifestPath: group.manifestPath,
-    createdAt: duplicate?.createdAt ?? nowIso(),
-    createdBy: actorName(),
-    reviewBy,
-    reviewReason: "Wait — no override/upgrade this cycle",
-    needsReview: false,
-  };
-  const { metadata: next } = dedupeOrSupersede(metadata, entry);
-  writeMetadata(cwd, config, next);
+function applyTriage(opts: ApplyOptions, report: ReportModel): CommandResult {
+  const { group, decision } = opts;
+  const proposal = triageProposal(opts);
+  const messages = [`TRIAGE: ${decision.reason}`];
+  if (proposal) {
+    messages.push(formatTriageProposal(proposal));
+    if (opts.force && !opts.apply) {
+      messages.push(`Dry-run: would force-write ${proposal.entries.join(", ")}. Pass --apply with --force.`);
+    }
+  } else if (opts.force) {
+    messages.push("Nothing to force-write — the advisory names no patched version.");
+  }
   return {
     exitCode: 0,
-    report: { ...report, title: `WAIT ${group.package}` },
+    report: { ...report, title: `TRIAGE ${group.package}` },
     messages,
-    writtenFiles: [config.metadataPath],
   };
 }
 
-function persistApplyVerifyFailed(
-  cwd: string,
-  config: SupplywardenConfig,
-  entry: MetadataEntry,
-  strategy: Decision["strategy"],
-  manifestPath: string,
-  error: string,
-): void {
-  entry.status = "verify_failed";
-  entry.resolvedAt = nowIso();
-  entry.resolvedBy = actorName();
-  entry.resolution = `verify-failed: ${error}`;
-  const meta = readMetadata(cwd, config);
-  const { metadata: next } = dedupeOrSupersede(meta, entry);
-  writeMetadata(cwd, config, next);
-  if (strategy === "override") {
-    syncOverridesToPackageJson(cwd, next, manifestPath);
+async function applyForcedTriageOverride(
+  opts: ApplyOptions,
+  forcedVersion: string,
+  reportEarly: ReportModel,
+): Promise<CommandResult> {
+  const { cwd, group, graph, decision } = opts;
+  const scopes = decision.scopes?.length ? decision.scopes : [decision.scope];
+  const proposal = proposeTriageOverride({
+    pkg: group.package,
+    version: forcedVersion,
+    scopes,
+    installedVersions: graph.versions,
+    advisories: group.advisories,
+  });
+  const messages: string[] = [];
+  const pinNote = breakingPinNote(group.package, graph.versions, forcedVersion);
+  if (pinNote) messages.push(pinNote);
+  messages.push(
+    `FORCED: writing triage proposal ${proposal.entries.join(", ")}. You chose to pin despite triage.`,
+  );
+
+  const existing = readPins(cwd);
+  const issues = (
+    await Promise.all(
+      proposal.pins.map((pin) =>
+        runPreApplyGate({
+          pkg: group.package,
+          forcedVersion,
+          graph,
+          advisories: group.advisories,
+          scope: pin.scope,
+          existing,
+          registry: opts.registry,
+        }),
+      ),
+    )
+  ).flat();
+  const seenIssue = new Set<string>();
+  const uniqueIssues = issues.filter((issue) => {
+    const key = `${issue.code}:${issue.message}`;
+    if (seenIssue.has(key)) return false;
+    seenIssue.add(key);
+    return true;
+  });
+  const blocked = blockingIssues(uniqueIssues);
+  const report = baseReport(opts, uniqueIssues, "Forced triage override");
+  if (blocked.length) {
+    return {
+      exitCode: 1,
+      report: { ...report, title: `Rejected: ${blocked[0]!.code}` },
+      messages: [
+        `Not writing package.json — ${blocked[0]!.code}`,
+        ...blocked.map((i) => (i.hint ? `${i.message} (${i.hint})` : i.message)),
+      ],
+    };
   }
+
+  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, ...extraSnapshotFiles(cwd)]);
+  for (const pin of proposal.pins) {
+    upsertOverride(
+      cwd,
+      {
+        package: pin.package,
+        version: pin.version,
+        scope: pin.scope,
+        ...(pin.selector ? { selector: pin.selector } : {}),
+      },
+      group.manifestPath,
+    );
+  }
+
+  if (!opts.skipInstall && opts.install) {
+    const installed = await opts.install.install(cwd);
+    if (!installed.ok) {
+      restoreFiles(cwd, snap);
+      messages.push(installed.error ?? "npm install failed");
+      return {
+        exitCode: 1,
+        report: { ...report, title: "Install failed" },
+        messages,
+      };
+    }
+  }
+
+  const post = await runPostVerify({
+    cwd,
+    pkg: group.package,
+    forcedVersion,
+    advisories: group.advisories,
+    audit: opts.audit,
+  });
+  const postBlocked = blockingIssues(post);
+  if (postBlocked.length && !opts.skipInstall) {
+    restoreFiles(cwd, snap);
+    messages.push(...postBlocked.map((i) => i.message));
+    return {
+      exitCode: 1,
+      report: { ...report, title: "Install failed", validation: [...uniqueIssues, ...post] },
+      messages,
+    };
+  }
+
+  messages.push(`Wrote ${proposal.entries.join(", ")}. package.json was updated.`);
+  return {
+    exitCode: 0,
+    report: { ...reportEarly, ...report, title: `Forced ${group.package}@${forcedVersion}` },
+    messages,
+    writtenFiles: ["package.json"],
+  };
 }
 
 async function applyRootUpgrade(
@@ -265,6 +412,7 @@ async function applyRootUpgrade(
   const commands = rootUpgradeCommands(pm, decision.upgradeTargets ?? []);
   const quoted = quotedUpgradeCommands(commands);
   const hasNx = commands.some((c) => c.kind === "nx");
+  const hasMigrate = commands.some((c) => c.kind === "migrate");
   const hasInstall = commands.some((c) => c.kind === "install");
   const nx = commands.find((c) => c.kind === "nx");
   const installCmd = commands.find((c) => c.kind === "install");
@@ -280,15 +428,20 @@ async function applyRootUpgrade(
     return { exitCode: 1, report: { ...report, title: "No upgrade version" }, messages };
   }
 
+  if (commands.every((command) => command.kind === "catalog")) {
+    messages.push(`Catalog edit is a suggestion — ${quoted}`);
+    return {
+      exitCode: blocked.length ? 1 : 0,
+      report: { ...report, title: "Catalog edit suggested" },
+      messages,
+    };
+  }
+
   if (!opts.apply) {
     noteBreakingUpgradeSkip(messages, decision);
     messages.push(
       config.autoApplyRootUpgrade
-        ? hasNx && !hasInstall
-          ? "Dry-run: pass --apply to start Nx migrate (Nx asks which packages to update)"
-          : hasNx && hasInstall
-            ? `Dry-run: pass --apply to run ${installCmd!.display} then start Nx migrate (Nx asks which packages to update)`
-            : "Dry-run: pass --apply to run the package-manager upgrade (package.json is not edited here)"
+        ? dryRunApplyLine({ hasNx, hasInstall, hasMigrate, install: installCmd?.display, quoted })
         : `Dry-run: root upgrade is a suggestion — run ${quoted} (set autoApplyRootUpgrade to run it from fix --apply)`,
     );
     return { exitCode: blocked.length ? 1 : 0, report, messages };
@@ -305,7 +458,7 @@ async function applyRootUpgrade(
   if (blocked.length) {
     return {
       exitCode: 1,
-      report: { ...report, title: `ABGELEHNT: ${blocked[0]!.code}` },
+      report: { ...report, title: `Rejected: ${blocked[0]!.code}` },
       messages: [
         `Not installing — ${blocked[0]!.code}`,
         ...blocked.map((i) => (i.hint ? `${i.message} (${i.hint})` : i.message)),
@@ -327,8 +480,16 @@ async function applyRootUpgrade(
     return { exitCode: 1, report: { ...report, title: "Root upgrade needs install" }, messages };
   }
 
-  const snap = snapshotFiles(cwd, [...PROJECT_SNAPSHOT_FILES, group.manifestPath]);
+  const snap = snapshotFiles(cwd, [
+    ...PROJECT_SNAPSHOT_FILES,
+    ...extraSnapshotFiles(cwd),
+    group.manifestPath,
+  ]);
   for (const command of commands) {
+    if (command.kind === "catalog") {
+      messages.push(command.display);
+      continue;
+    }
     const installed = await install.runCommand(cwd, command.file, command.args);
     if (!installed.ok) {
       restoreFiles(cwd, snap);
@@ -341,21 +502,30 @@ async function applyRootUpgrade(
     }
   }
 
-  if (hasNx) {
+  if (hasNx || hasMigrate) {
     if (hasInstall) {
       messages.push(`Installed via ${installCmd!.display} (no override written)`);
     }
-    messages.push(
-      `Started ${nx!.display} — Nx owns package selection. If it wrote migrations.json, install then \`npx nx migrate --run-migrations\`.`,
-    );
+    if (hasNx) {
+      messages.push(
+        `Started ${nx!.display} — Nx owns package selection. If it wrote migrations.json, install then \`npx nx migrate --run-migrations\`.`,
+      );
+    }
+    const migrate = commands
+      .filter((command) => command.kind === "migrate")
+      .map((command) => command.display)
+      .join(" then ");
+    if (migrate) {
+      messages.push(`Started ${migrate}. The migration CLI owns which packages move.`);
+    }
+    const title = hasNx
+      ? hasInstall
+        ? `Upgraded via ${pm} then Nx migrate`
+        : `Nx migrate ${nx!.args[nx!.args.length - 1] ?? ""}`.trim()
+      : `Upgraded via ${migrate}`;
     return {
       exitCode: 0,
-      report: {
-        ...report,
-        title: hasInstall
-          ? `Upgraded via ${pm} then Nx migrate`
-          : `Nx migrate ${nx!.args[nx!.args.length - 1] ?? ""}`.trim(),
-      },
+      report: { ...report, title },
       messages,
       writtenFiles: [group.manifestPath],
     };
@@ -374,7 +544,11 @@ async function applyRootUpgrade(
     messages.push(...postBlocked.map((i) => i.message));
     return {
       exitCode: 1,
-      report: { ...report, title: "VERIFY_FAILED", validation: [...(report.validation ?? []), ...post] },
+      report: {
+        ...report,
+        title: "VERIFY_FAILED",
+        validation: [...(report.validation ?? []), ...post],
+      },
       messages,
     };
   }
@@ -386,6 +560,23 @@ async function applyRootUpgrade(
     messages,
     writtenFiles: [group.manifestPath],
   };
+}
+
+function dryRunApplyLine(opts: {
+  hasNx: boolean;
+  hasInstall: boolean;
+  hasMigrate: boolean;
+  install?: string;
+  quoted: string;
+}): string {
+  if (opts.hasNx && !opts.hasInstall) {
+    return "Dry-run: pass --apply to start Nx migrate (Nx asks which packages to update)";
+  }
+  if (opts.hasNx && opts.hasInstall) {
+    return `Dry-run: pass --apply to run ${opts.install} then start Nx migrate (Nx asks which packages to update)`;
+  }
+  if (opts.hasMigrate) return `Dry-run: pass --apply to run ${opts.quoted}`;
+  return "Dry-run: pass --apply to run the package-manager upgrade (package.json is not edited here)";
 }
 
 function baseReport(

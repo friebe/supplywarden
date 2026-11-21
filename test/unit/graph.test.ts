@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { inferDependencyKind, dependencyKindLabel, mergeDependencyKind, analyzeNpmGraph } from "../../src/graph/npm.js";
+import { describe, expect, it } from "vite-plus/test";
+import {
+  inferDependencyKind,
+  dependencyKindLabel,
+  mergeDependencyKind,
+  analyzeNpmGraph,
+} from "../../src/graph/npm.js";
 import { parsePnpmKey } from "../../src/graph/pnpm.js";
+import { extraSnapshotFiles, findPnpmRoot } from "../../src/graph/workspace.js";
 import { parseYarnDescriptor } from "../../src/graph/yarn.js";
 import { fixtureDir, FIXTURES_ROOT } from "../helpers/fixture-project.js";
 import { join } from "node:path";
@@ -61,6 +67,10 @@ describe("analyzeNpmGraph lockfile dispatch", () => {
     expect(graph.versions).toContain("6.5.0");
     expect(graph.roots.map((r) => r.name)).toContain("express");
     expect(graph.chains.some((c) => c.path.join(" → ").includes("express@4.18.2"))).toBe(true);
+    expect(graph.dependers).toEqual([
+      { parent: "body-parser", range: "6.5.0", version: "1.20.1" },
+      { parent: "express", range: "6.5.0", version: "4.18.2" },
+    ]);
   });
 
   it("reads express → qs from pnpm-lock.yaml", () => {
@@ -69,6 +79,10 @@ describe("analyzeNpmGraph lockfile dispatch", () => {
     expect(graph.versions).toEqual(["6.5.0"]);
     expect(graph.roots).toEqual([{ name: "express", version: "4.18.2", range: "^4.18.2" }]);
     expect(graph.dependencyKind).toBe("production");
+    expect(graph.dependers).toEqual([
+      { parent: "body-parser", range: "6.5.0", version: "1.20.1" },
+      { parent: "express", range: "6.5.0", version: "4.18.2" },
+    ]);
     expect(graph.chains.map((c) => c.path)).toEqual(
       expect.arrayContaining([
         ["express@4.18.2", "qs@6.5.0"],
@@ -90,6 +104,59 @@ describe("analyzeNpmGraph lockfile dispatch", () => {
     expect(graph.roots.some((r) => r.name === "commander")).toBe(true);
   });
 
+  it("keeps the workspace importer and the catalog when the lockfile is above the member", () => {
+    const member = join(fixtureDir("pnpm-workspace"), "apps/web");
+    expect(findPnpmRoot(member)).toBe(fixtureDir("pnpm-workspace"));
+    expect(findPnpmRoot(fixtureDir("npm-simple"))).toBeUndefined();
+    expect(findPnpmRoot(fixtureDir("pnpm-simple"))).toBe(fixtureDir("pnpm-simple"));
+
+    const leftPad = analyzeNpmGraph(member, "left-pad");
+    expect(leftPad.roots).toEqual([
+      { name: "left-pad", version: "1.0.0", range: "1.0.0", importer: "web" },
+    ]);
+
+    const minimist = analyzeNpmGraph(member, "minimist");
+    expect(minimist.roots).toEqual([
+      {
+        name: "minimist",
+        version: "1.2.0",
+        range: "^1.2.0",
+        importer: "@repo/ui",
+        catalog: "default",
+      },
+    ]);
+
+    const ms = analyzeNpmGraph(member, "ms");
+    expect(ms.roots).toEqual([
+      { name: "ms", version: "2.0.0", range: "2.0.0", importer: "@repo/ui" },
+    ]);
+    expect(ms.chains).toEqual([
+      { path: ["ms@2.0.0"], package: "ms", version: "2.0.0", importer: "@repo/ui" },
+    ]);
+
+    const qs = analyzeNpmGraph(member, "qs");
+    expect(qs.roots).toEqual([
+      { name: "express", version: "4.18.2", range: "^4.18.2", importer: "web" },
+    ]);
+    expect(qs.chains.map((chain) => chain.path)).toEqual([["express@4.18.2", "qs@6.5.0"]]);
+
+    const picomatch = analyzeNpmGraph(member, "picomatch");
+    expect(picomatch.inTree).toBe(true);
+    expect(picomatch.roots.map((root) => root.name)).toContain("fdir");
+
+    const bootOnly = analyzeNpmGraph(fixtureDir("pnpm-multidoc"), "pnpm");
+    expect(bootOnly.inTree).toBe(false);
+    const fromProjectDoc = analyzeNpmGraph(fixtureDir("pnpm-multidoc"), "qs");
+    expect(fromProjectDoc.roots).toEqual([
+      { name: "express", version: "4.18.2", range: "^4.18.2" },
+    ]);
+    expect(extraSnapshotFiles(fixtureDir("pnpm-workspace")).sort()).toEqual([
+      "apps/web/package.json",
+      "packages/ui/package.json",
+      "pnpm-workspace.yaml",
+    ]);
+  });
+
   it("does not invent a tree when the package is missing from a pnpm lockfile", () => {
     const graph = analyzeNpmGraph(fixtureDir("pnpm-simple"), "left-pad");
     expect(graph.inTree).toBe(false);
@@ -107,7 +174,13 @@ describe("lockfile key parsing", () => {
 
   it("parses yarn descriptors", () => {
     expect(parseYarnDescriptor("express@^4.18.2")).toEqual({ name: "express", range: "^4.18.2" });
-    expect(parseYarnDescriptor("express@npm:^4.18.2")).toEqual({ name: "express", range: "^4.18.2" });
-    expect(parseYarnDescriptor("@scope/pkg@npm:1.0.0")).toEqual({ name: "@scope/pkg", range: "1.0.0" });
+    expect(parseYarnDescriptor("express@npm:^4.18.2")).toEqual({
+      name: "express",
+      range: "^4.18.2",
+    });
+    expect(parseYarnDescriptor("@scope/pkg@npm:1.0.0")).toEqual({
+      name: "@scope/pkg",
+      range: "1.0.0",
+    });
   });
 });

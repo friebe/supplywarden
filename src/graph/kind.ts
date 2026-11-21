@@ -49,7 +49,10 @@ export function dependencyKindLabel(kind?: DependencyKind): string {
   return "";
 }
 
-export function mergeDependencyKind(a?: DependencyKind, b?: DependencyKind): DependencyKind | undefined {
+export function mergeDependencyKind(
+  a?: DependencyKind,
+  b?: DependencyKind,
+): DependencyKind | undefined {
   if (!a) return b;
   if (!b) return a;
   if (a === "production" || b === "production") return "production";

@@ -1,18 +1,15 @@
 import { groupAlerts, severityAtLeast } from "../alerts/dependabot.js";
-import { specFloorSafe } from "../util/semver-spec.js";
 import { detectPackageManager } from "../graph/npm.js";
 import type {
-  Advisory,
   AuditClient,
   AuditFinding,
   AuditResult,
-  MetadataEntry,
   PackageAlertGroup,
   PackageManager,
   Severity,
 } from "../types.js";
 import { execPm } from "../util/pm-exec.js";
-import { parseNpmAuditJson } from "./parse.js";
+import { auditFailureMessage, parseNpmAuditJson } from "./parse.js";
 
 export function createStaticAudit(findings: AuditFinding[], error?: string): AuditClient {
   return {
@@ -23,7 +20,11 @@ export function createStaticAudit(findings: AuditFinding[], error?: string): Aud
 }
 
 function auditArgSets(pm: PackageManager): string[][] {
-  if (pm === "yarn") return [["audit", "--json"], ["npm", "audit", "--json"]];
+  if (pm === "yarn")
+    return [
+      ["audit", "--json"],
+      ["npm", "audit", "--json"],
+    ];
   return [["audit", "--json"]];
 }
 
@@ -36,7 +37,10 @@ export function createLiveAudit(): AuditClient {
       for (const args of auditArgSets(pm)) {
         try {
           const { stdout } = await execPm(pm, args, { cwd, timeout: 120_000 });
-          return { vulnerabilities: parseNpmAuditJson(stdout) };
+          const vulnerabilities = parseNpmAuditJson(stdout);
+          const failure = auditFailureMessage(stdout);
+          if (failure && !vulnerabilities.length) return { vulnerabilities: [], error: failure };
+          return { vulnerabilities };
         } catch (err) {
           lastError = (err as Error).message || `${pm} ${args.join(" ")} failed`;
         }
@@ -71,33 +75,4 @@ export function findingsToGroups(findings: AuditFinding[]): PackageAlertGroup[] 
       },
     })),
   );
-}
-
-function advisoryForFinding(finding: AuditFinding): Advisory {
-  return {
-    ghsaId: finding.ghsaId,
-    cveId: finding.cveId,
-    severity: finding.severity,
-    vulnerableRange: finding.range ?? "*",
-    patchedVersion: finding.patchedVersion,
-  };
-}
-
-export function isFindingCovered(finding: AuditFinding, entries: MetadataEntry[]): boolean {
-  const active = entries.filter(
-    (e) =>
-      e.package === finding.package &&
-      (e.status === "active" || e.status === "pending_verify"),
-  );
-  if (!active.length) return false;
-  if (active.some((entry) => entry.strategy === "defer" || entry.strategy === "wait")) return true;
-  const advisory = advisoryForFinding(finding);
-  return active.some((entry) => specFloorSafe(entry.forcedVersion, [advisory]));
-}
-
-export function uncoveredFindings(
-  findings: AuditFinding[],
-  entries: MetadataEntry[],
-): AuditFinding[] {
-  return findings.filter((finding) => !isFindingCovered(finding, entries));
 }

@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { parseNpmAuditJson } from "../../src/audit/parse.js";
-import { filterFindings, isFindingCovered } from "../../src/audit/client.js";
+import { describe, expect, it } from "vite-plus/test";
+import { auditFailureMessage, parseNpmAuditJson } from "../../src/audit/parse.js";
+import { filterFindings } from "../../src/audit/client.js";
 import { FIXTURES_ROOT } from "../helpers/fixture-project.js";
-import type { MetadataEntry } from "../../src/types.js";
 
 describe("parseNpmAuditJson", () => {
   it("reads npm audit v2 advisories and skips via-aliases", () => {
@@ -56,39 +55,20 @@ describe("parseNpmAuditJson", () => {
       patchedVersion: "6.11.2",
     });
   });
+
+  it("reads an npm audit error instead of an empty report", () => {
+    const raw = JSON.stringify({
+      error: {
+        code: "EOVERRIDE",
+        summary: "Override for follow-redirects@1.14.9 conflicts with direct dependency",
+      },
+    });
+    expect(parseNpmAuditJson(raw)).toEqual([]);
+    expect(auditFailureMessage(raw)).toMatch(/EOVERRIDE/);
+  });
 });
 
 describe("audit coverage", () => {
-  const entry = {
-    package: "qs",
-    status: "active",
-    forcedVersion: "6.11.2",
-  } as MetadataEntry;
-
-  it("treats a patched override as covering the finding", () => {
-    expect(
-      isFindingCovered({ package: "qs", severity: "high", range: "< 6.11.0" }, [entry]),
-    ).toBe(true);
-  });
-
-  it("treats a ^patched override as covering the finding", () => {
-    expect(
-      isFindingCovered(
-        { package: "qs", severity: "high", range: "< 6.11.0" },
-        [{ ...entry, forcedVersion: "^6.11.2" }],
-      ),
-    ).toBe(true);
-  });
-
-  it("does not cover a still-vulnerable override", () => {
-    expect(
-      isFindingCovered(
-        { package: "qs", severity: "high", range: "< 6.11.0" },
-        [{ ...entry, forcedVersion: "6.10.0" }],
-      ),
-    ).toBe(false);
-  });
-
   it("filters below min severity", () => {
     expect(
       filterFindings(

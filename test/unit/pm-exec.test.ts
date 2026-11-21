@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { resolvePm } from "../../src/util/pm-exec.js";
 
 const winNode = "C:\\Program Files\\nodejs\\node.exe";
@@ -11,7 +11,9 @@ describe("resolvePm", () => {
       exists: (p) => p.replace(/\\/g, "/").endsWith("node_modules/npm/bin/npm-cli.js"),
     });
     expect(resolved.file).toBe(winNode);
-    expect(resolved.argsPrefix[0]?.replace(/\\/g, "/")).toMatch(/node_modules\/npm\/bin\/npm-cli\.js$/);
+    expect(resolved.argsPrefix[0]?.replace(/\\/g, "/")).toMatch(
+      /node_modules\/npm\/bin\/npm-cli\.js$/,
+    );
     expect(resolved.shell).toBe(false);
   });
 
