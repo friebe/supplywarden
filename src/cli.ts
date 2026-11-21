@@ -127,7 +127,7 @@ withGlobals(
   program
     .command("check")
     .option("--strict", "exit 1 when a finding still needs an upgrade or a pin")
-    .description("Audit and print one next command per transitive finding"),
+    .description("Audit, check whether installed overrides are still required, and print the next command"),
 ).action(async (opts: { strict?: boolean }, cmd: Command) => {
   emit(
     await runCheck({

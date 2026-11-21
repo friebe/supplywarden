@@ -226,63 +226,118 @@ describe("why / fix", () => {
     expect(result.report.groups?.[0]?.package).toBe("qs");
   });
 
-  it("keeps installed pins when the audit is silent and only drops unused overrides", async () => {
-    const result = await runCheck({
-      cwd: fixtureDir("npm-mixed"),
-      audit: createStaticAudit([]),
+  it("keeps an override whose parent range is still vulnerable and drops one that resolves clean", async () => {
+    await withFixture("npm-mixed", async (cwd) => {
+      const before = await readFile(join(cwd, "package.json"), "utf8");
+      const result = await runCheck({
+        cwd,
+        audit: createStaticAudit([]),
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+          async advisoriesFor(pkg, version) {
+            if (pkg === "qs" && version === "6.5.0") {
+              return [
+                {
+                  severity: "high",
+                  vulnerableRange: "<6.11.0",
+                  patchedVersion: "6.11.2",
+                },
+              ];
+            }
+            return [];
+          },
+        },
+      });
+      const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.package, e.action]));
+      const qsRow = result.report.entries.find((e) => e.package === "qs");
+      expect(byPkg.qs).toBe("keep");
+      expect(qsRow?.summary).toMatch(/still required/);
+      expect(qsRow?.summary).toMatch(/6\.5\.0/);
+      expect(byPkg["follow-redirects"]).toBe("drop");
+      expect(
+        result.report.entries.find((e) => e.package === "follow-redirects")?.summary,
+      ).toMatch(/1\.14\.9/);
+      expect(
+        result.report.entries.find((e) => e.package === "follow-redirects")?.commands,
+      ).toEqual(["supplywarden verify follow-redirects --apply"]);
+      expect(byPkg.lodash).toBe("drop");
+      expect(byPkg.request).toBe("drop");
+      expect(await readFile(join(cwd, "package.json"), "utf8")).toBe(before);
+      const html = renderHtml(result.report);
+      expect(html).toMatch(/parent range already resolves outside the advisory/);
+      expect(html).toMatch(/1\.14\.9/);
     });
-    const byPkg = Object.fromEntries(result.report.entries.map((e) => [e.package, e.action]));
-    expect(byPkg.qs).toBe("keep");
-    expect(byPkg["follow-redirects"]).toBe("keep");
-    expect(byPkg.lodash).toBe("drop");
-    expect(byPkg.request).toBe("drop");
-    expect(result.report.entries.some((e) => e.action !== "drop")).toBe(true);
+  });
+
+  it("keeps an installed override when the advisory lookup fails", async () => {
+    await withFixture("npm-mixed", async (cwd) => {
+      const result = await runCheck({
+        cwd,
+        audit: createStaticAudit([]),
+        registry: {
+          async verifyPackageVersion() {
+            return { exists: true, deprecated: null };
+          },
+          async advisoriesFor() {
+            throw new Error("registry down");
+          },
+        },
+      });
+      const qsRow = result.report.entries.find((e) => e.package === "qs");
+      expect(qsRow?.action).toBe("keep");
+      expect(qsRow?.summary).toMatch(/could not be checked/);
+      expect(result.report.entries.find((e) => e.package === "request")?.action).toBe("drop");
+    });
   });
 
   it("upgrades a root together with the direct dependency that peers on it", async () => {
-    const cwd = fixtureDir("npm-mixed");
-    const result = await runCheck({
-      cwd,
-      audit: createStaticAudit([
-        {
-          package: "left-pad",
-          severity: "high",
-          range: "< 1.3.0",
-          patchedVersion: "1.3.0",
-        },
-      ]),
+    await withFixture("npm-mixed", async (cwd) => {
+      const result = await runCheck({
+        cwd,
+        audit: createStaticAudit([
+          {
+            package: "left-pad",
+            severity: "high",
+            range: "< 1.3.0",
+            patchedVersion: "1.3.0",
+          },
+        ]),
       registry: createLiveRegistry(cwd),
     });
     const row = result.report.entries.find((entry) => entry.package === "left-pad");
-    expect(row?.action).toBe("upgrade");
-    expect(row?.commands.join("\n")).toBe("npm install @demo/core@1.2.0 @demo/common@1.2.0");
+      expect(row?.action).toBe("upgrade");
+      expect(row?.commands.join("\n")).toBe("npm install @demo/core@1.2.0 @demo/common@1.2.0");
+    });
   });
 
   it("sends a parent-breaking pin to triage when no published root closes the advisory", async () => {
-    const cwd = fixtureDir("npm-mixed");
-    const result = await runCheck({
-      cwd,
-      audit: createStaticAudit([
-        {
-          package: "marked",
-          severity: "high",
-          range: "< 4.0.0",
-          patchedVersion: "4.0.0",
-        },
-      ]),
+    await withFixture("npm-mixed", async (cwd) => {
+      const result = await runCheck({
+        cwd,
+        audit: createStaticAudit([
+          {
+            package: "marked",
+            severity: "high",
+            range: "< 4.0.0",
+            patchedVersion: "4.0.0",
+          },
+        ]),
       registry: createLiveRegistry(cwd),
     });
     const row = result.report.entries.find((entry) => entry.package === "marked");
-    expect(row?.action).toBe("triage");
-    expect(row?.summary).toMatch(/old-tool@1\.0\.0 asks for marked@1\.0\.0/);
-    expect(row?.summary).toMatch(/That parent can fail to build/);
-    expect(row?.summary).toMatch(/human decision/);
-    expect(row?.summary).toMatch(/Proposal:/);
-    expect(row?.summary).toMatch(/--apply --force/);
-    expect(row?.commands).toEqual([
-      "supplywarden fix marked --apply --force",
-      "supplywarden why marked",
-    ]);
+      expect(row?.action).toBe("triage");
+      expect(row?.summary).toMatch(/old-tool@1\.0\.0 asks for marked@1\.0\.0/);
+      expect(row?.summary).toMatch(/That parent can fail to build/);
+      expect(row?.summary).toMatch(/human decision/);
+      expect(row?.summary).toMatch(/Proposal:/);
+      expect(row?.summary).toMatch(/--apply --force/);
+      expect(row?.commands).toEqual([
+        "supplywarden fix marked --apply --force",
+        "supplywarden why marked",
+      ]);
+    });
   });
 
   it("tells you to upgrade the root when the safe version is outside the installed range", async () => {

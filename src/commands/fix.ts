@@ -66,10 +66,11 @@ export async function runFix(opts: {
     const pins = readPins(cwd);
     const silent = pins.map((pin) => findingForSilentPin(cwd, pin.package, pin.version));
     const drops = silent.filter((row) => row.action === "drop");
+    const installed = silent.length - drops.length;
     const hint = pins.length
       ? drops.length
-        ? `Audit is clean. ${silent.length - drops.length} pin(s) stay because they are installed. ${drops.length} unused override(s): ${drops.map((row) => row.package).join(", ")}.`
-        : `Audit is clean. ${pins.length} pin(s) stay installed, so the silence is the override doing its job.`
+        ? `Audit is clean. ${drops.length} unused override(s): ${drops.map((row) => row.package).join(", ")}. ${installed} installed pin(s) are not probed here; supplywarden check checks whether they are still required.`
+        : `Audit is clean. ${pins.length} installed pin(s) are not probed here. supplywarden check checks whether they are still required.`
       : "Audit found no vulnerabilities at the configured minimum severity";
     return {
       exitCode: pins.length ? 0 : 1,

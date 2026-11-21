@@ -14,20 +14,24 @@ import {
   stillVulnerable,
   vulnerableReach,
 } from "../decision/engine.js";
+import { valid } from "semver";
 import { analyzeNpmGraph, resolvePackageManager } from "../graph/npm.js";
 import { resolveProjectDir } from "../graph/workspace.js";
 import { createLiveAudit, filterFindings, findingsToGroups } from "../audit/client.js";
 import { createLiveRegistry } from "../registry/verify.js";
+import { advisoryKey, fetchAdvisories } from "../registry/advisories.js";
 import {
   groupUpgradeNote,
   lockfileRefreshCommand,
   rootUpgradeCommands,
 } from "../fix/upgrade-command.js";
 import { extractExistingOverrides, readPackageJson } from "../metadata/sync.js";
-import { specFloorSafe, specMinVersion } from "../util/semver-spec.js";
+import { specFloorSafe, specMinVersion, versionSatisfiesSpec } from "../util/semver-spec.js";
 import { advisoryBrief, findingLines, withDirectPatch } from "../report/model.js";
+import { judgeParents, planParents } from "../validation/override-need.js";
 import { nowIso } from "../util/time.js";
 import type {
+  Advisory,
   AuditClient,
   CommandResult,
   Decision,
@@ -48,7 +52,8 @@ export async function runCheck(opts: {
 }): Promise<CommandResult> {
   const cwd = resolveProjectDir(opts.cwd);
   const config = loadConfig(cwd);
-  const groups = await loadGroups(opts, cwd, config.audit.minSeverity);
+  const audit = opts.audit ?? createLiveAudit();
+  const groups = await loadGroups(audit, cwd, config.audit.minSeverity);
   if ("error" in groups) {
     return {
       exitCode: 1,
@@ -63,6 +68,7 @@ export async function runCheck(opts: {
     };
   }
 
+  const allowAdvisoryLookup = !opts.registry || Boolean(opts.registry.advisoriesFor);
   const registry = opts.registry ?? createLiveRegistry(cwd);
   const pins = readPins(cwd);
   const findings: Finding[] = [];
@@ -74,6 +80,14 @@ export async function runCheck(opts: {
     if (seen.has(pin.package)) continue;
     findings.push(findingForSilentPin(cwd, pin.package, pin.version));
   }
+
+  await classifyInstalledOverrides({
+    cwd,
+    minSeverity: config.audit.minSeverity,
+    registry,
+    allowAdvisoryLookup,
+    findings,
+  });
 
   const actionable = findings.filter(
     (f) =>
@@ -294,7 +308,10 @@ function toFinding(
   };
 }
 
-/** Audit is silent for this pin. Silence usually means the pin is holding the safe version. */
+/**
+ * Audit is silent for this pin. `drop` here is unused (not installed, or already declared).
+ * `keep` is only a candidate until the parent ranges are checked against the advisory list.
+ */
 export function findingForSilentPin(cwd: string, pkg: string, version: string): Finding {
   const graph = analyzeNpmGraph(cwd, pkg);
   const roots = graph.roots.map((r) => `${r.name}@${r.version}`);
@@ -337,9 +354,106 @@ export function findingForSilentPin(cwd: string, pkg: string, version: string): 
   return {
     ...base,
     action: "keep",
-    summary: `The audit does not list ${pkg} because ${installed} is installed under override ${version}. ${count} That silence is the pin doing its job, not a reason to remove it. verify ${pkg} is the probe if you want to test the drop.`,
+    summary: `The audit does not list ${pkg} because ${installed} is installed under override ${version}. ${count}`,
     commands: [`supplywarden verify ${pkg}`],
   };
+}
+
+/**
+ * Installed overrides the audit did not list. The lockfile already says which range each
+ * parent asked for. That range, not a fresh install, is the version the pin is holding off.
+ * One advisory lookup says whether that version is still a problem.
+ */
+async function classifyInstalledOverrides(opts: {
+  cwd: string;
+  minSeverity: Severity;
+  registry: RegistryClient;
+  allowAdvisoryLookup: boolean;
+  findings: Finding[];
+}): Promise<void> {
+  const candidates = opts.findings.filter((finding) => finding.action === "keep");
+  if (!candidates.length) return;
+  const pins = extractExistingOverrides(readPackageJson(opts.cwd));
+  const planned = await Promise.all(
+    candidates.map(async (finding) => ({
+      finding,
+      parents: await planParents({
+        pins: pins
+          .filter((pin) => pin.package === finding.package)
+          .map((pin) => ({ version: pin.version, scope: pin.scope })),
+        dependers: analyzeNpmGraph(opts.cwd, finding.package).dependers ?? [],
+        resolveRange: (range) => resolveNatural(finding.package, range, opts.registry),
+      }),
+    })),
+  );
+
+  const specs: Array<{ package: string; version: string }> = [];
+  for (const row of planned) {
+    for (const parent of row.parents ?? []) {
+      if (!parent.natural || versionSatisfiesSpec(parent.natural, parent.pin)) continue;
+      specs.push({ package: row.finding.package, version: parent.natural });
+    }
+  }
+  const advisories = await loadAdvisories(specs, opts.registry, opts.allowAdvisoryLookup);
+
+  for (const row of planned) {
+    const judgment = judgeParents({
+      pkg: row.finding.package,
+      version: row.finding.forcedVersion ?? "",
+      parents: row.parents,
+      advisories,
+      minSeverity: opts.minSeverity,
+    });
+    row.finding.action = judgment.action;
+    row.finding.summary = judgment.summary;
+    row.finding.severity = judgment.severity;
+    row.finding.advisories = judgment.advisories;
+    row.finding.advisory = advisoryBrief(judgment.advisories) || undefined;
+    row.finding.commands =
+      judgment.action === "drop"
+        ? [`supplywarden verify ${row.finding.package} --apply`]
+        : [`supplywarden why ${row.finding.package}`];
+  }
+}
+
+async function resolveNatural(
+  pkg: string,
+  range: string,
+  registry: RegistryClient,
+): Promise<string | undefined> {
+  const exact = valid(range);
+  if (exact) return exact;
+  try {
+    return await registry.getLatestMatching?.(pkg, range);
+  } catch {
+    return undefined;
+  }
+}
+
+async function loadAdvisories(
+  specs: Array<{ package: string; version: string }>,
+  registry: RegistryClient,
+  allowBulk: boolean,
+): Promise<Map<string, Advisory[] | undefined> | null> {
+  if (!specs.length) return new Map();
+  if (registry.advisoriesFor) {
+    const map = new Map<string, Advisory[] | undefined>();
+    await Promise.all(
+      specs.map(async (spec) => {
+        const key = advisoryKey(spec.package, spec.version);
+        if (map.has(key)) return;
+        map.set(key, undefined);
+        try {
+          map.set(key, await registry.advisoriesFor!(spec.package, spec.version));
+        } catch {
+          map.set(key, undefined);
+        }
+      }),
+    );
+    return map;
+  }
+  if (!allowBulk) return null;
+  return fetchAdvisories(specs);
 }
 
 function declaredDepRange(cwd: string, pkgName: string): string | undefined {
@@ -377,12 +491,11 @@ export function readPins(cwd: string): Array<{ package: string; version: string 
 }
 
 async function loadGroups(
-  opts: { audit?: AuditClient },
+  audit: AuditClient,
   cwd: string,
   minSeverity: Severity,
 ): Promise<{ groups: PackageAlertGroup[] } | { error: string }> {
-  const client = opts.audit ?? createLiveAudit();
-  const result = await client.audit(cwd);
+  const result = await audit.audit(cwd);
   if (result.error && !result.vulnerabilities.length) {
     return { error: `audit failed: ${result.error}` };
   }

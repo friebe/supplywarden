@@ -25,7 +25,7 @@ npx supplywarden report
 
 | Command | What you get |
 |---------|----------------|
-| `check` | One row per audit finding: installed version, roots, chain, and a command. Overrides already in `package.json` that the audit does not list are marked **drop**. Nothing is written. |
+| `check` | One row per audit finding: installed version, roots, chain, and a command. Installed overrides the audit does not list are compared with the parent range in the lockfile and one advisory lookup. No install. A pin whose parents would still land in the advisory is **keep**. A pin they no longer need is **drop**. Nothing is written. |
 | `check --strict` | Exit `1` when a finding still needs a refresh, upgrade, override, or triage decision. |
 | `check --open` | Same as `check`, then open the HTML report. |
 | `why <pkg>` | Who pulls that package in. |
@@ -47,8 +47,8 @@ A row is one of these actions:
 - **upgrade** — a newer root version closes the advisory. Only roots that still pull a **vulnerable** copy are named. The command is one `npm install`, `pnpm add`, or `yarn add` for that root and every direct dependency whose peer range would reject the new version. In a pnpm workspace the command is `pnpm --filter <name> add` for the member that still depends on it. A `catalog:` dependency is a line in `pnpm-workspace.yaml`, not `pnpm add`. `nx` uses `npx nx migrate nx@<version>`. `@angular/*` uses one `npx ng update` for the whole set. `storybook` and `@storybook/*` use one `npx storybook@<version> upgrade`. When several packages must move together, Do lists every command. When an installed parent range rejects the safe version, the summary names that parent and says to upgrade the root first.
 - **override** — pin the patched version under each package that still depends on it (`"body-parser": { "qs": "6.11.2" }`), or globally when the vulnerable copy is a direct dependency. Automatic only when the pin stays within the installed major **and** the number of affected parents is at or under `upgradeRootThreshold`. A same-major pin past an exact parent range still applies — that is what overrides are for. `fix <pkg> --apply` writes that pin.
 - **triage** — a human decision is required: major-version pin, too many parents for an automatic override, or (when `pinDevelopment` is `false`) a non-critical development/optional tree. No pin is written automatically. The row includes a concrete **proposal** (for a major jump, a version selector such as `"minimatch@>=7 <11.0.1": "11.0.1"` that leaves older major lines untouched) and the command `fix <pkg> --apply --force` to write it deliberately.
-- **keep** — the audit is silent and the pin is installed. That silence is the override doing its job. `verify <pkg>` is the probe if you want to test removing it.
-- **drop** — the override is unused: the package is not in the lockfile, or `package.json` already depends on that same version.
+- **keep** — without the override, a parent would install a version the advisory still lists. The pin is what keeps that copy outside the vulnerable range.
+- **drop** — the override can go. The package is not in the lockfile, `package.json` already depends on that same version, or every parent range already resolves outside the advisory. `verify <pkg> --apply` removes it.
 
 `check` does not write a ledger. The only project file `fix --apply` and `verify --apply` change is `package.json` (and the lockfile, when an install runs). See `decision-layer.md` for the full decision flowchart.
 

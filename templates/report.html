@@ -279,7 +279,7 @@
       }
       if (showDrop) {
         const section = document.createElement("section");
-        section.append(el("h2", "", "Unused"), el("p", "note", "These overrides do not change what is installed."));
+        section.append(el("h2", "", "Unused"), el("p", "note", "These overrides can go. They are unused, or every parent range already resolves outside the advisory."));
         section.append(table(["Package", "Why", "Do"], groups.drop.map((entry) => {
           const tr = document.createElement("tr");
           const done = el("td", "do");
@@ -295,9 +295,9 @@
         const drifted = groups.keep.some(offPin);
         section.append(el("h2", "", "Holding"));
         section.append(el("p", "note", drifted
-          ? "The audit is quiet. Highlighted rows are installed on a different version than the pin."
-          : "The audit is quiet. These pins are what is installed."));
-        section.append(table(["Package", "Installed", "Pin", "Via"], groups.keep.map((entry) => {
+          ? "Without the override, a parent would install a version the advisory still lists. Highlighted rows are installed on a different version than the pin."
+          : "Without the override, a parent would install a version the advisory still lists."));
+        section.append(table(["Package", "Installed", "Pin", "Via", "Why"], groups.keep.map((entry) => {
           const tr = document.createElement("tr");
           if (offPin(entry)) tr.className = "mismatch";
           tr.append(
@@ -305,6 +305,7 @@
             el("td", "", (entry.installed || []).join(", ") || "—"),
             el("td", "pin", entry.forcedVersion || "—"),
             viaCell(entry),
+            el("td", "", firstSentence(entry.summary)),
           );
           return tr;
         })));
